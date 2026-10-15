@@ -11,6 +11,10 @@
 -- ============================================================================
 
 -- ---------- 迁移版本跟踪表 ---------
+-- 建表期间临时关闭外键检查：chunks→notes、notes→ai_versions 存在前向引用/循环依赖，
+-- MySQL 要求被引用表已存在，故统一先关检查、建完再开（mysqldump 同款做法）
+SET FOREIGN_KEY_CHECKS = 0;
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version    INT     PRIMARY KEY,
     name       VARCHAR(128) NOT NULL,
@@ -495,6 +499,9 @@ CREATE INDEX idx_eval_results_started
 -- ---------- 记录本次迁移 ----------
 INSERT IGNORE INTO schema_migrations(version, name, applied_at) VALUES
     (1, 'init', '2026-10-15T00:00:00.000Z');
+
+-- ---------- 恢复外键检查（建表完成） ----------
+SET FOREIGN_KEY_CHECKS = 1;
 
 -- ============================================================================
 -- 验证脚本（可选，运行后请 CHECK TABLE）
