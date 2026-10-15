@@ -24,8 +24,10 @@ except ImportError:
     sys.exit("[error] 请先安装 pymysql: pip install pymysql")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_SQL = os.path.join(os.path.dirname(HERE), "..", "..", "..", "数据库建库脚本-MySQL版.sql")
-# 实际默认脚本：项目根目录《数据库建库脚本-MySQL版.sql》；若不存在则尝试本目录 mysql/*.sql
+# 项目根 = HERE(mysql) 向上 6 级：sql -> resources -> main -> src -> backend -> reading-notes
+PROJECT_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", "..", "..", ".."))
+DEFAULT_SQL = os.path.join(PROJECT_ROOT, "数据库建库脚本-MySQL版.sql")
+# 实际默认脚本：项目根目录《数据库建库脚本-MySQL版.sql》；若不存在则尝试本目录 mysql/0001_init.sql
 if not os.path.exists(DEFAULT_SQL):
     DEFAULT_SQL = os.path.join(HERE, "0001_init.sql")
 

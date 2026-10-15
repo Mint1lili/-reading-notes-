@@ -3,9 +3,11 @@
 -- 目标：MySQL 8.0+ / InnoDB / utf8mb4
 -- 内容：建库 + 0001 建表 + 0002 Prompt 模板 + 0003 评测题 + 0004 标签
 -- 用法：Navicat 连接 MySQL（任意库）→ 新建查询 → 运行本文件
+-- 注意：本脚本开头会先 DROP 已存在的 reading_notes 库再重建，可重复执行（幂等）
 --      或命令行：mysql -u root -p < 本文件
 -- ============================================================
 
+DROP DATABASE IF EXISTS reading_notes;
 CREATE DATABASE IF NOT EXISTS reading_notes
     DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE reading_notes;
@@ -403,7 +405,7 @@ CREATE INDEX idx_prompt_name_created
 CREATE TABLE IF NOT EXISTS backups (
     backup_id              VARCHAR(64) PRIMARY KEY,
     backup_type            VARCHAR(16) NOT NULL,
-    trigger                VARCHAR(24) NOT NULL,
+    trigger_source         VARCHAR(24) NOT NULL,
     file_path              VARCHAR(1024) NOT NULL,
     file_size              BIGINT NOT NULL,
     sha256                 VARCHAR(64) NOT NULL,
@@ -413,7 +415,7 @@ CREATE TABLE IF NOT EXISTS backups (
     status                 VARCHAR(16) NOT NULL DEFAULT 'RUNNING',
     error_message          VARCHAR(1024),
     CHECK (backup_type IN ('auto','manual')),
-    CHECK (trigger IN ('scheduled','manual_click','pre_upgrade')),
+    CHECK (trigger_source IN ('scheduled','manual_click','pre_upgrade')),
     CHECK (status IN ('RUNNING','SUCCESS','FAILED')),
     CHECK (file_size >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

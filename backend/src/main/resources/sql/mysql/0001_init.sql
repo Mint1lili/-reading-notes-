@@ -390,7 +390,7 @@ CREATE INDEX idx_prompt_name_created
 CREATE TABLE IF NOT EXISTS backups (
     backup_id              VARCHAR(64) PRIMARY KEY,
     backup_type            VARCHAR(16) NOT NULL,
-    trigger                VARCHAR(24) NOT NULL,
+    trigger_source         VARCHAR(24) NOT NULL,
     file_path              VARCHAR(1024) NOT NULL,
     file_size              BIGINT NOT NULL,
     sha256                 VARCHAR(64) NOT NULL,
@@ -400,7 +400,7 @@ CREATE TABLE IF NOT EXISTS backups (
     status                 VARCHAR(16) NOT NULL DEFAULT 'RUNNING',
     error_message          VARCHAR(1024),
     CHECK (backup_type IN ('auto','manual')),
-    CHECK (trigger IN ('scheduled','manual_click','pre_upgrade')),
+    CHECK (trigger_source IN ('scheduled','manual_click','pre_upgrade')),
     CHECK (status IN ('RUNNING','SUCCESS','FAILED')),
     CHECK (file_size >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
