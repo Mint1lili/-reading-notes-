@@ -13,7 +13,6 @@ import org.springframework.stereotype.Component;
 public class AppProperties {
 
     private String dataDir;
-    private String sqlitePath;
     private String uploadsDir;
     private String logsDir;
     private String backupsDir;

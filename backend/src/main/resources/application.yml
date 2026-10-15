@@ -11,11 +11,20 @@ spring:
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: Asia/Shanghai
+  # MySQL 8 数据源（生产通过环境变量注入，避免密码进配置库）
+  datasource:
+    url: "${DB_URL:jdbc:mysql://localhost:3306/reading_notes?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true}"
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 8
+      minimum-idle: 1
+      connection-test-query: SELECT 1
 
 # 数据与存储路径（相对项目根 data/）
 app:
   data-dir: ${APP_DATA_DIR:../data}
-  sqlite-path: ${APP_DATA_DIR:../data}/notes.db
   uploads-dir: ${APP_DATA_DIR:../data}/uploads
   logs-dir: ${APP_DATA_DIR:../data}/logs
   backups-dir: ${APP_DATA_DIR:../data}/backups

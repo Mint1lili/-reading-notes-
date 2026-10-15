@@ -54,32 +54,51 @@ jobs:
       - name: Build
         run: npm run build
 
-  # ===== 数据库：迁移脚本完整性校验 =====
+  # ===== 数据库：MySQL 迁移脚本完整性校验 =====
   database:
-    name: Database (SQLite migrations)
+    name: Database (MySQL migrations)
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: reading_notes
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Apply migrations (temp db)
+      - name: Install MySQL client
+        run: sudo apt-get update && sudo apt-get install -y default-mysql-client
+      - name: Wait for MySQL
         run: |
-          cd backend/src/main/resources/sql
-          python apply.py --db /tmp/notes_ci.db
-          python apply.py --db /tmp/notes_ci.db --check
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h 127.0.0.1 -uroot -proot --silent; then echo "MySQL ready"; exit 0; fi
+            sleep 2
+          done
+          echo "MySQL not ready"; exit 1
+      - name: Apply migrations (0001 -> 0004)
+        run: |
+          for f in backend/src/main/resources/sql/mysql/*.sql; do
+            echo "==> $f"
+            mysql -h 127.0.0.1 -uroot -proot reading_notes < "$f" || exit 1
+          done
       - name: Verify seed data
         run: |
-          python -c "
-          import sqlite3
-          conn = sqlite3.connect('/tmp/notes_ci.db')
-          cur = conn.cursor()
-          cur.execute('SELECT COUNT(*) FROM eval_datasets');  assert cur.fetchone()[0] == 50, 'eval_datasets != 50'
-          cur.execute('SELECT COUNT(*) FROM prompt_versions'); assert cur.fetchone()[0] == 8, 'prompt_versions != 8'
-          cur.execute('SELECT COUNT(*) FROM tags');           assert cur.fetchone()[0] == 6, 'tags != 6'
-          cur.execute('SELECT COUNT(*) FROM books');          assert cur.fetchone()[0] == 5, 'books != 5'
-          cur.execute('PRAGMA foreign_key_check');            assert cur.fetchall() == [], 'foreign key violations'
-          print('DB_CHECKS_OK: 50 eval / 8 prompts / 6 tags / 5 books / 0 fk violations')
-          conn.close()
-          "
+          eval_cnt=$(mysql -h 127.0.0.1 -uroot -proot reading_notes -N -e "SELECT COUNT(*) FROM eval_datasets")
+          prompt_cnt=$(mysql -h 127.0.0.1 -uroot -proot reading_notes -N -e "SELECT COUNT(*) FROM prompt_versions")
+          tag_cnt=$(mysql -h 127.0.0.1 -uroot -proot reading_notes -N -e "SELECT COUNT(*) FROM tags")
+          book_cnt=$(mysql -h 127.0.0.1 -uroot -proot reading_notes -N -e "SELECT COUNT(*) FROM books")
+          mig_cnt=$(mysql -h 127.0.0.1 -uroot -proot reading_notes -N -e "SELECT COUNT(*) FROM schema_migrations")
+          echo "eval=$eval_cnt prompt=$prompt_cnt tags=$tag_cnt books=$book_cnt migrations=$mig_cnt"
+          [ "$eval_cnt" -eq 50 ]   || { echo "FAIL eval_datasets=$eval_cnt != 50"; exit 1; }
+          [ "$prompt_cnt" -eq 8 ]  || { echo "FAIL prompt_versions=$prompt_cnt != 8"; exit 1; }
+          [ "$tag_cnt" -eq 6 ]     || { echo "FAIL tags=$tag_cnt != 6"; exit 1; }
+          [ "$book_cnt" -eq 5 ]    || { echo "FAIL books=$book_cnt != 5"; exit 1; }
+          [ "$mig_cnt" -eq 4 ]     || { echo "FAIL schema_migrations=$mig_cnt != 4"; exit 1; }
+          echo "DB_CHECKS_OK: 50 eval / 8 prompts / 6 tags / 5 books / 4 migrations"

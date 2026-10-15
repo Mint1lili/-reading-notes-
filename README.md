@@ -15,7 +15,7 @@ B/S 单用户本地部署：上传 PDF 电子书 → 构建私有 RAG 知识库 
 |---|---|
 | 后端 | SpringBoot 3.2（JDK 17）+ Spring JDBC + PDFBox + Java HttpClient |
 | 向量库 | Chroma Server 模式（`chroma run --port 8000`，1024 维 cosine） |
-| 数据库 | SQLite 3.40+（WAL 模式） |
+| 数据库 | MySQL 8.0+（InnoDB / utf8mb4） |
 | AI | 豆包大模型 API（火山引擎 Ark）：`Doubao-embedding-text-240715` + Chat 模型 |
 | 前端 | Vue 3 + Vite + Element Plus + Pinia + Vue Router |
 
@@ -35,26 +35,28 @@ reading-notes/
 │       │   └── ReadingNotesApplication.java
 │       └── resources/
 │           ├── application.yml
-│           └── sql/          # 4 个迁移脚本 + apply.py/apply.bat（从设计文档复制）
+│           └── sql/mysql/      # MySQL 迁移脚本（0001 建表 + 0002-0004 种子数据）
 ├── frontend/                 # Vue3 前端（端口 5173）
 │   └── src/
 │       ├── api/              # axios 封装 + 接口定义
 │       ├── router/ views/    # 书库 / AI读书 / 笔记 / 评估 / 设置
 │       └── App.vue
-├── data/                     # 运行时数据（SQLite / uploads / logs / backups / config）
+├── data/                     # 运行时数据（uploads / logs / backups / config）
 └── README.md
 ```
 
 ## 启动步骤（三步）
 
-### 1. 初始化数据库
+### 1. 初始化数据库（MySQL 8）
+
+**首次部署**，在 Navicat / 命令行执行 `backend/src/main/resources/sql/mysql/` 下的脚本（或直接运行项目根目录《数据库建库脚本-MySQL版.sql》一键版）：
 
 ```bash
-cd backend/src/main/resources/sql
-python apply.py          # 自动创建 data/notes.db 并执行 4 个迁移（幂等）
+mysql -u root -p < "数据库建库脚本-MySQL版.sql"     # 自动建库 reading_notes + 建表 + 种子数据
 ```
 
-> 已内置：18 张业务表 + 8 个 Prompt 模板 + 50 题评测集 + 6 个系统标签 + 5 本演示书占位。
+> 内置：18 张业务表 + 8 个 Prompt 模板 + 50 题评测集 + 6 个系统标签 + 5 本演示书占位。
+> 后端连接默认 `localhost:3306 / reading_notes / root / 空密码`，可用环境变量覆盖：`DB_URL`、`DB_USER`、`DB_PASSWORD`（生产必须设置）。
 
 ### 2. 配置豆包 API Key（环境变量，安全要求 §6.2）
 
@@ -80,7 +82,7 @@ setx DOUBAO_API_KEY "你的火山引擎豆包 API Key"
 ### 已实现（可编译可运行）
 - 统一响应信封 / 错误码体系（API 文档 §2/§3）/ 全局异常（业务 400/参数 400/大文件 413/兜底 500）
 - trace_id 全链路（响应头 X-Trace-Id）
-- SQLite 数据源（连接级 PRAGMA：foreign_keys/WAL/busy_timeout）
+- MySQL 数据源（HikariCP 连接池，凭据环境变量注入，密码不落配置库）
 - 豆包客户端：Chat（含 SSE 流式）/ Embedding（批 16 + 429 指数退避 1s→2s→4s）
 - Chroma 客户端：集合创建/upsert/query（cosine + where 过滤）/delete/健康检查
 - 语义切片器（600 字 / 章节优先 / 1500 不切 / 3000 二次切 / 100 重叠）

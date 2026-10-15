@@ -26,8 +26,7 @@ public class BookRepository {
         this.jdbc = jdbc;
     }
 
-    // 注意：sqlite-jdbc 的 getObject(col, Class) 对 NULL 列会抛 "Bad value for type Integer"，
-    // 必须用基础 getter + wasNull 手动判空（含 total_pages/chunk_count/识别率/embedding_dim 等可空列）
+    // 防御式读取：可空数值列用基础 getter + wasNull 手动判空（MySQL/SQLite 均适用）
     private static Integer getInt(ResultSet rs, String col) throws SQLException {
         int v = rs.getInt(col);
         return rs.wasNull() ? null : v;
