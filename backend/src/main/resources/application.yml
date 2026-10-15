@@ -1,0 +1,60 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: reading-notes-server
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 55MB
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+
+# 数据与存储路径（相对项目根 data/）
+app:
+  data-dir: ${APP_DATA_DIR:../data}
+  sqlite-path: ${APP_DATA_DIR:../data}/notes.db
+  uploads-dir: ${APP_DATA_DIR:../data}/uploads
+  logs-dir: ${APP_DATA_DIR:../data}/logs
+  backups-dir: ${APP_DATA_DIR:../data}/backups
+  prompts-dir: ${APP_DATA_DIR:../data}/config/prompts
+
+# 豆包大模型 API（火山引擎 Ark，OpenAI 兼容端点）
+# 生产必须通过环境变量注入：setx DOUBAO_API_KEY "你的key"
+doubao:
+  api-key: ${DOUBAO_API_KEY:}
+  base-url: ${DOUBAO_BASE_URL:https://ark.cn-beijing.volces.com/api/v3}
+  chat-model: ${DOUBAO_CHAT_MODEL:doubao-pro-32k}
+  embedding-model: ${DOUBAO_EMBEDDING_MODEL:doubao-embedding-text-240715}
+  embedding-dim: 1024
+  batch-size: 16          # Embedding 批量大小（F2.4）
+  max-retries: 3          # 429 指数退避重试上限
+
+# Chroma 向量库（Server 模式）
+chroma:
+  base-url: ${CHROMA_BASE_URL:http://localhost:8000}
+  health-check-interval-ms: 30000
+
+# RAG 默认参数（F5.2，可在设置页运行时调整）
+rag:
+  recall-top-k: 10
+  rerank-top-n: 5
+  similarity-threshold: 0.5
+  chunk-size: 600
+  overlap: 100
+  multi-turn-n: 3
+  enable-rerank: true
+  enable-metadata-filter: true
+
+# 构建任务（F2）
+build:
+  worker-threads: 1       # 串行队列，避免 Embedding 并发限流
+  chunk-soft-limit: 5000  # 单书切片软上限
+
+logging:
+  level:
+    com.readingnotes: info
+  file:
+    name: ${APP_DATA_DIR:../data}/logs/app.log
