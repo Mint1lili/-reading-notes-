@@ -4,8 +4,11 @@ import com.readingnotes.common.BusinessException;
 import com.readingnotes.common.ErrorCode;
 import com.readingnotes.common.Result;
 import com.readingnotes.entity.Note;
+import com.readingnotes.entity.Tag;
 import com.readingnotes.repository.NoteRepository;
+import com.readingnotes.repository.TagRepository;
 import com.readingnotes.service.NoteService;
+import com.readingnotes.service.TagService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,7 +39,8 @@ import java.util.Map;
  *   <li>POST /notes/{note_id}/restore  恢复（9.6）</li>
  *   <li>DELETE /notes/{note_id}/purge  永久删除（9.7）</li>
  * </ul>
- * 待后续阶段：9.8 回流开关、9.9 AI 产物存为笔记、9.10 双向链接、9.11 导出、9.12 标签。
+ * 待后续阶段：9.8 回流开关、9.9 AI 产物存为笔记、9.10 双向链接、9.11 导出。
+ * 第二阶段已实现：9.12 标签（创建笔记 tag_names 自动打标 + 列表 tag 过滤 + tags 字段填充）。
  */
 @RestController
 @RequestMapping("/api/v1/notes")
@@ -44,19 +48,28 @@ public class NoteController {
 
     private final NoteService noteService;
     private final NoteRepository noteRepository;
+    private final TagService tagService;
+    private final TagRepository tagRepository;
 
-    public NoteController(NoteService noteService, NoteRepository noteRepository) {
+    public NoteController(NoteService noteService, NoteRepository noteRepository,
+                          TagService tagService, TagRepository tagRepository) {
         this.noteService = noteService;
         this.noteRepository = noteRepository;
+        this.tagService = tagService;
+        this.tagRepository = tagRepository;
     }
 
     // ==================== 9.1 新建笔记 ====================
 
-    /** 请求体：{ title?, content(必填), source_type?, source_book_id?, source_page?, source_chunk_id? } */
+    /** 请求体：{ title?, content(必填), source_type?, source_book_id?, source_page?, source_chunk_id?, tag_names? } */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Result<Map<String, Object>> create(@RequestBody Note note) {
         Note created = noteService.create(note);
+        // 阶段 2：tag_names 自动打标（不存在则自动创建，幂等）
+        if (note.getTagNames() != null && !note.getTagNames().isEmpty()) {
+            tagService.bindTags(created.getNoteId(), note.getTagNames());
+        }
         Map<String, Object> data = new HashMap<>();
         data.put("note_id", created.getNoteId());
         data.put("title", created.getTitle());
@@ -74,23 +87,27 @@ public class NoteController {
             @RequestParam(required = false) String book_id,
             @RequestParam(required = false) String source_type,
             @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String tag,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize) {
-        List<Note> notes = noteService.list(book_id, source_type, keyword, page, pageSize);
+        List<Note> notes = noteService.list(book_id, source_type, keyword, tag, page, pageSize);
+        // 批量查标签，避免列表逐行 N+1 查询
+        Map<String, List<Tag>> tagsMap = tagRepository.findByNoteIds(
+                notes.stream().map(Note::getNoteId).toList());
         List<Map<String, Object>> items = new ArrayList<>();
         for (Note n : notes) {
-            items.add(toListItem(n));
+            items.add(toListItem(n, tagsMap.getOrDefault(n.getNoteId(), List.of())));
         }
         Map<String, Object> data = new HashMap<>();
-        data.put("total", noteService.count(book_id, source_type, keyword));
+        data.put("total", noteService.count(book_id, source_type, keyword, tag));
         data.put("page", page);
         data.put("page_size", pageSize);
         data.put("items", items);
         return Result.ok(data);
     }
 
-    /** 列表项：正文只给 200 字预览；tags/链接数由阶段 2/3 填充 */
-    private Map<String, Object> toListItem(Note n) {
+    /** 列表项：正文只给 200 字预览；tags 为真实标签；link_count 由阶段 3 填充 */
+    private Map<String, Object> toListItem(Note n, List<Tag> tags) {
         Map<String, Object> item = new HashMap<>();
         item.put("note_id", n.getNoteId());
         item.put("title", n.getTitle());
@@ -98,7 +115,7 @@ public class NoteController {
         item.put("source_type", n.getSourceType());
         item.put("source_book_title", noteRepository.sourceBookTitle(n.getSourceBookId()));
         item.put("source_page", n.getSourcePage());
-        item.put("tags", new ArrayList<>());            // 阶段 2 标签
+        item.put("tags", tags);
         item.put("is_indexed", n.getIsIndexed() != null && n.getIsIndexed() == 1);
         item.put("index_status", n.getIndexStatus());
         item.put("word_count", n.getWordCount());
@@ -124,7 +141,7 @@ public class NoteController {
         data.put("source_chunk_id", n.getSourceChunkId());
         // 来源书被删（或来源书不存在）时置 false，前端跳转按钮置灰（F1.2 第 3 步）
         data.put("can_jump_to_source", noteRepository.sourceBookExists(n.getSourceBookId()));
-        data.put("tags", new ArrayList<>());            // 阶段 2 标签
+        data.put("tags", tagRepository.findByNoteId(noteId));
         data.put("is_indexed", n.getIsIndexed() != null && n.getIsIndexed() == 1);
         data.put("index_status", n.getIndexStatus());
         data.put("word_count", n.getWordCount());

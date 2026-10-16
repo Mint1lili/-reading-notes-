@@ -13,12 +13,12 @@ public interface NoteService {
     /** 新建笔记，返回已落库的完整实体（含生成的 note_id/时间/版本号） */
     Note create(Note note);
 
-    /** 笔记列表（分页 + 可选过滤） */
+    /** 笔记列表（分页 + 可选过滤；tagName 按标签名过滤，阶段 2） */
     List<Note> list(String sourceBookId, String sourceType, String keyword,
-                    int page, int pageSize);
+                    String tagName, int page, int pageSize);
 
     /** 笔记总数（与 list 同过滤条件） */
-    long count(String sourceBookId, String sourceType, String keyword);
+    long count(String sourceBookId, String sourceType, String keyword, String tagName);
 
     /** 笔记详情（未软删；不存在抛 50001） */
     Note detail(String noteId);

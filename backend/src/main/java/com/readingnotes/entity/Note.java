@@ -1,6 +1,9 @@
 package com.readingnotes.entity;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
+
+import java.util.List;
 
 /**
  * 笔记实体（数据库设计 §5.4 notes 表 / API 文档 §9）
@@ -66,4 +69,11 @@ public class Note {
 
     /** 更新时间 */
     private String updatedAt;
+
+    /**
+     * 创建时传入的标签名列表（请求字段 tag_names，仅接收用，不入 notes 表；
+     * 绑定关系由阶段 2 写入 note_tag_map）
+     */
+    @JsonProperty("tag_names")
+    private List<String> tagNames;
 }

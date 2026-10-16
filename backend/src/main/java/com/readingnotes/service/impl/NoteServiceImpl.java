@@ -69,16 +69,16 @@ public class NoteServiceImpl implements NoteService {
 
     @Override
     public List<Note> list(String sourceBookId, String sourceType, String keyword,
-                           int page, int pageSize) {
+                           String tagName, int page, int pageSize) {
         // 分页参数兜底：页码 ≥1，页大小 1~100（与 BookServiceImpl 一致）
         int safePage = Math.max(page, 1);
         int safeSize = Math.min(Math.max(pageSize, 1), 100);
-        return noteRepository.list(sourceBookId, sourceType, keyword, safePage, safeSize);
+        return noteRepository.list(sourceBookId, sourceType, keyword, tagName, safePage, safeSize);
     }
 
     @Override
-    public long count(String sourceBookId, String sourceType, String keyword) {
-        return noteRepository.count(sourceBookId, sourceType, keyword);
+    public long count(String sourceBookId, String sourceType, String keyword, String tagName) {
+        return noteRepository.count(sourceBookId, sourceType, keyword, tagName);
     }
 
     @Override
