@@ -3,6 +3,7 @@ package com.readingnotes.service.impl;
 import com.readingnotes.common.BusinessException;
 import com.readingnotes.common.ErrorCode;
 import com.readingnotes.entity.Note;
+import com.readingnotes.repository.NoteLinkRepository;
 import com.readingnotes.repository.NoteRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -32,11 +33,14 @@ class NoteServiceImplTest {
     @Mock
     private NoteRepository noteRepository;
 
+    @Mock
+    private NoteLinkRepository noteLinkRepository;
+
     private NoteServiceImpl noteService;
 
     @BeforeEach
     void setUp() {
-        noteService = new NoteServiceImpl(noteRepository);
+        noteService = new NoteServiceImpl(noteRepository, noteLinkRepository);
     }
 
     // ==================== 新建 ====================

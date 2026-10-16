@@ -5,8 +5,10 @@ import com.readingnotes.common.ErrorCode;
 import com.readingnotes.common.Result;
 import com.readingnotes.entity.Note;
 import com.readingnotes.entity.Tag;
+import com.readingnotes.repository.NoteLinkRepository;
 import com.readingnotes.repository.NoteRepository;
 import com.readingnotes.repository.TagRepository;
+import com.readingnotes.service.NoteLinkService;
 import com.readingnotes.service.NoteService;
 import com.readingnotes.service.TagService;
 import org.springframework.http.HttpStatus;
@@ -39,8 +41,9 @@ import java.util.Map;
  *   <li>POST /notes/{note_id}/restore  恢复（9.6）</li>
  *   <li>DELETE /notes/{note_id}/purge  永久删除（9.7）</li>
  * </ul>
- * 待后续阶段：9.8 回流开关、9.9 AI 产物存为笔记、9.10 双向链接、9.11 导出。
+ * 待后续阶段：9.8 回流开关、9.9 AI 产物存为笔记、9.11 导出。
  * 第二阶段已实现：9.12 标签（创建笔记 tag_names 自动打标 + 列表 tag 过滤 + tags 字段填充）。
+ * 第三阶段已实现：9.10 双向链接（查询/创建 + 详情 links + 列表 link_count）。
  */
 @RestController
 @RequestMapping("/api/v1/notes")
@@ -50,13 +53,18 @@ public class NoteController {
     private final NoteRepository noteRepository;
     private final TagService tagService;
     private final TagRepository tagRepository;
+    private final NoteLinkService noteLinkService;
+    private final NoteLinkRepository noteLinkRepository;
 
     public NoteController(NoteService noteService, NoteRepository noteRepository,
-                          TagService tagService, TagRepository tagRepository) {
+                          TagService tagService, TagRepository tagRepository,
+                          NoteLinkService noteLinkService, NoteLinkRepository noteLinkRepository) {
         this.noteService = noteService;
         this.noteRepository = noteRepository;
         this.tagService = tagService;
         this.tagRepository = tagRepository;
+        this.noteLinkService = noteLinkService;
+        this.noteLinkRepository = noteLinkRepository;
     }
 
     // ==================== 9.1 新建笔记 ====================
@@ -91,12 +99,15 @@ public class NoteController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize) {
         List<Note> notes = noteService.list(book_id, source_type, keyword, tag, page, pageSize);
-        // 批量查标签，避免列表逐行 N+1 查询
+        // 批量查标签与链接数，避免列表逐行 N+1 查询
         Map<String, List<Tag>> tagsMap = tagRepository.findByNoteIds(
+                notes.stream().map(Note::getNoteId).toList());
+        Map<String, Integer> linkCountMap = noteLinkRepository.countLinksByNoteIds(
                 notes.stream().map(Note::getNoteId).toList());
         List<Map<String, Object>> items = new ArrayList<>();
         for (Note n : notes) {
-            items.add(toListItem(n, tagsMap.getOrDefault(n.getNoteId(), List.of())));
+            items.add(toListItem(n, tagsMap.getOrDefault(n.getNoteId(), List.of()),
+                    linkCountMap.getOrDefault(n.getNoteId(), 0)));
         }
         Map<String, Object> data = new HashMap<>();
         data.put("total", noteService.count(book_id, source_type, keyword, tag));
@@ -106,8 +117,8 @@ public class NoteController {
         return Result.ok(data);
     }
 
-    /** 列表项：正文只给 200 字预览；tags 为真实标签；link_count 由阶段 3 填充 */
-    private Map<String, Object> toListItem(Note n, List<Tag> tags) {
+    /** 列表项：正文只给 200 字预览；tags 为真实标签；link_count 为出链+入链总数 */
+    private Map<String, Object> toListItem(Note n, List<Tag> tags, int linkCount) {
         Map<String, Object> item = new HashMap<>();
         item.put("note_id", n.getNoteId());
         item.put("title", n.getTitle());
@@ -119,7 +130,7 @@ public class NoteController {
         item.put("is_indexed", n.getIsIndexed() != null && n.getIsIndexed() == 1);
         item.put("index_status", n.getIndexStatus());
         item.put("word_count", n.getWordCount());
-        item.put("link_count", 0);                      // 阶段 3 双向链接
+        item.put("link_count", linkCount);              // 阶段 3：出链+入链总数
         item.put("created_at", n.getCreatedAt());
         item.put("updated_at", n.getUpdatedAt());
         return item;
@@ -146,7 +157,8 @@ public class NoteController {
         data.put("index_status", n.getIndexStatus());
         data.put("word_count", n.getWordCount());
         data.put("editor_version", n.getEditorVersion());
-        data.put("links", new ArrayList<>());           // 阶段 3 双向链接
+        // 阶段 3：详情 links 展示出链（目标被永久删除时标题兜底、jumpable=false）
+        data.put("links", noteLinkService.list(noteId).get("outgoing"));
         data.put("created_at", n.getCreatedAt());
         data.put("updated_at", n.getUpdatedAt());
         return Result.ok(data);
@@ -196,6 +208,26 @@ public class NoteController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public Result<Void> purge(@PathVariable String noteId) {
         noteService.purge(noteId);
+        return Result.ok();
+    }
+
+    // ==================== 9.10 双向链接 ====================
+
+    /** 查询：{ outgoing: [...], incoming: [...] } */
+    @GetMapping("/{noteId}/links")
+    public Result<Map<String, Object>> links(@PathVariable String noteId) {
+        return Result.ok(noteLinkService.list(noteId));
+    }
+
+    /** 创建：{ target_note_id(必填), context? }；两端笔记不存在返回 50001；同对幂等 */
+    @PostMapping("/{noteId}/links")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Result<Void> createLink(@PathVariable String noteId,
+                                   @RequestBody Map<String, Object> body) {
+        String targetNoteId = body.get("target_note_id") == null ? null
+                : body.get("target_note_id").toString();
+        String context = body.get("context") == null ? null : body.get("context").toString();
+        noteLinkService.create(noteId, targetNoteId, context);
         return Result.ok();
     }
 

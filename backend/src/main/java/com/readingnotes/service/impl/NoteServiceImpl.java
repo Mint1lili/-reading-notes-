@@ -3,6 +3,7 @@ package com.readingnotes.service.impl;
 import com.readingnotes.common.BusinessException;
 import com.readingnotes.common.ErrorCode;
 import com.readingnotes.entity.Note;
+import com.readingnotes.repository.NoteLinkRepository;
 import com.readingnotes.repository.NoteRepository;
 import com.readingnotes.service.NoteService;
 import lombok.extern.slf4j.Slf4j;
@@ -22,9 +23,11 @@ import java.util.List;
 public class NoteServiceImpl implements NoteService {
 
     private final NoteRepository noteRepository;
+    private final NoteLinkRepository noteLinkRepository;
 
-    public NoteServiceImpl(NoteRepository noteRepository) {
+    public NoteServiceImpl(NoteRepository noteRepository, NoteLinkRepository noteLinkRepository) {
         this.noteRepository = noteRepository;
+        this.noteLinkRepository = noteLinkRepository;
     }
 
     // ==================== 新建 ====================
@@ -133,6 +136,8 @@ public class NoteServiceImpl implements NoteService {
     @Override
     @Transactional
     public void purge(String noteId) {
+        // 阶段 3 联动：清理该笔记相关的双向链接（source 侧删除 + target 侧 target_jumpable=0）
+        noteLinkRepository.purgeNoteLinks(noteId);
         int deleted = noteRepository.purge(noteId);
         if (deleted == 0) {
             throw new BusinessException(ErrorCode.NOTE_NOT_FOUND);
