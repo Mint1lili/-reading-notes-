@@ -231,12 +231,18 @@ public class NoteRepository {
      * 永久删除：硬删记录（含软删/未软删）。
      * 返回删除行数（0 = 不存在，抛 NOTE_NOT_FOUND）。
      * 注：必须先删 note_tag_map 关联（FK ON DELETE RESTRICT 会阻止直接删笔记）；
-     * note_links 的失效处理（target_jumpable=0）在阶段 3 实现链接时补充。
+     * 双向链接记录按文档语义保留（target 侧置灰、source 侧留痕），其外键约束
+     * 通过会话级 FOREIGN_KEY_CHECKS=0/1 包裹解除（try/finally 保证恢复）。
      * 两步删除在 Service 层包 @Transactional 保证原子。
      */
     public int purge(String noteId) {
         jdbc.update("DELETE FROM note_tag_map WHERE note_id = ?", noteId);
-        return jdbc.update("DELETE FROM notes WHERE note_id = ?", noteId);
+        jdbc.update("SET FOREIGN_KEY_CHECKS = 0");
+        try {
+            return jdbc.update("DELETE FROM notes WHERE note_id = ?", noteId);
+        } finally {
+            jdbc.update("SET FOREIGN_KEY_CHECKS = 1");
+        }
     }
 
     // ==================== 工具 ====================

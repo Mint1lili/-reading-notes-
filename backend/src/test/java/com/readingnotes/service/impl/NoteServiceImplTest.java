@@ -192,13 +192,15 @@ class NoteServiceImplTest {
     }
 
     @Test
-    @DisplayName("永久删除成功")
+    @DisplayName("永久删除成功：联动清理链接")
     void purge_success() {
         when(noteRepository.purge("note_1")).thenReturn(1);
 
         noteService.purge("note_1");
 
         verify(noteRepository).purge("note_1");
+        // 阶段 3 联动：purge 时先处理双向链接（target 侧置灰）
+        verify(noteLinkRepository).purgeNoteLinks("note_1");
     }
 
     @Test

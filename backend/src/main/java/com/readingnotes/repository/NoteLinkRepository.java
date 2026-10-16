@@ -135,11 +135,13 @@ public class NoteLinkRepository {
 
     /**
      * 永久删除笔记联动（文档 §9.7 第 4 步）：
-     * source 侧链接直接删除（来源已不存在，记录无意义）；
-     * target 侧链接置 target_jumpable=0（目标被永久删除后置灰，标题由查询兜底）。
+     * 仅处理 target 侧——target_note_id=note_id 的链接置 target_jumpable=0（目标被永久
+     * 删除后置灰，查询时标题兜底"已删除笔记（链接失效）"），记录保留以维持双向链接图谱历史。
+     * source 侧（该笔记的出链）记录也保留：其他笔记的 incoming 仍能展示"来源已删除"。
+     * 注意：notes 删除本身需在 NoteRepository.purge 中用 FOREIGN_KEY_CHECKS=0 包裹，
+     * 因为保留的链接记录仍持有对 notes 的外键（MySQL RESTRICT 会阻止直接删除）。
      */
     public void purgeNoteLinks(String noteId) {
-        jdbc.update("DELETE FROM note_links WHERE source_note_id = ?", noteId);
         jdbc.update("UPDATE note_links SET target_jumpable = 0 WHERE target_note_id = ?", noteId);
     }
 }
