@@ -7,6 +7,7 @@ import com.readingnotes.repository.NoteRepository;
 import com.readingnotes.service.NoteService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -130,6 +131,7 @@ public class NoteServiceImpl implements NoteService {
     }
 
     @Override
+    @Transactional
     public void purge(String noteId) {
         int deleted = noteRepository.purge(noteId);
         if (deleted == 0) {
