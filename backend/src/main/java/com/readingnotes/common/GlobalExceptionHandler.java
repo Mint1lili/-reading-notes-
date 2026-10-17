@@ -28,6 +28,24 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(e.getHttpStatus()).body(r);
     }
 
+    /**
+     * 上传重名（20003）：响应 data 里带回 existing_book_id，前端据此弹二次确认。
+     * 见 API 文档 §5.1「重名确认 409」。
+     */
+    @ExceptionHandler(com.readingnotes.service.impl.BookServiceImpl.DuplicateBookException.class)
+    public ResponseEntity<Result<java.util.Map<String, Object>>> handleDuplicate(
+            com.readingnotes.service.impl.BookServiceImpl.DuplicateBookException e) {
+        log.info("duplicate book upload, existing={} trace={}", e.getExistingBookId(), TraceContext.current());
+        java.util.Map<String, Object> data = new java.util.HashMap<>();
+        data.put("existing_book_id", e.getExistingBookId());
+        Result<java.util.Map<String, Object>> r = new Result<>();
+        r.setCode(e.getCode());
+        r.setMessage(e.getMessage());
+        r.setData(data);
+        r.setTraceId(TraceContext.current());
+        return ResponseEntity.status(e.getHttpStatus()).body(r);
+    }
+
     @ExceptionHandler({MethodArgumentNotValidException.class, ConstraintViolationException.class})
     public ResponseEntity<Result<Void>> handleValidation(Exception e) {
         String msg = "请求参数有误";
