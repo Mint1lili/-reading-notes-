@@ -46,7 +46,10 @@ doubao:
 # api-version: v2 对应 chromadb >= 1.0（推荐，pip install chromadb==1.5.9）
 #              v1 对应 chromadb 0.4.x ~ 0.6.x（旧版，1.x 服务端已移除 v1，会返回 410）
 chroma:
-  base-url: ${CHROMA_BASE_URL:http://localhost:8000}
+  # 用显式 IPv4 而非 localhost：Chroma 1.x 默认只监听 IPv6 的 localhost，
+  # 而 JVM 解析 localhost 时优先 IPv4，会出现「curl 能连、Java 连不上」的现象。
+  # 启动命令须配套指定：chroma run --path ./data/chroma --host 127.0.0.1 --port 8000
+  base-url: ${CHROMA_BASE_URL:http://127.0.0.1:8000}
   api-version: ${CHROMA_API_VERSION:v2}
   tenant: ${CHROMA_TENANT:default_tenant}
   database: ${CHROMA_DATABASE:default_database}
