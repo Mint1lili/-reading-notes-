@@ -21,4 +21,7 @@ public class DoubaoProperties {
     private int embeddingDim;
     private int batchSize;
     private int maxRetries;
+
+    /** Embedding 单次请求超时（秒），需求 §8 要求 30s 超时提示「向量化服务超时」 */
+    private int embeddingTimeoutSeconds = 35;
 }

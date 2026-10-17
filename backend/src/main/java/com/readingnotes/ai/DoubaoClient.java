@@ -157,6 +157,103 @@ public class DoubaoClient {
         }
     }
 
+    /**
+     * Embedding 带可等待标志：批量构建用。
+     * <p>
+     * 与 {@link #embed(List)} 的区别：429 限流时设置 {@code rateLimitedFlag[0]=true} 并继续
+     * 指数退避重试，让构建任务能区分"限流但可续"与"彻底失败"，从而决定是否标记该批次失败。
+     * 超时时间放宽到 embeddingTimeoutSeconds（大文档单批可能 >60s）。
+     *
+     * @param texts          待向量化文本（≤ batchSize）
+     * @param rateLimited    出参：本次调用是否遇到 429
+     */
+    public List<List<Float>> embed(List<String> texts, boolean[] rateLimited) {
+        ensureKey();
+        int retries = 0;
+        int maxRetries = props.getMaxRetries();
+        int timeout = props.getEmbeddingTimeoutSeconds() > 0 ? props.getEmbeddingTimeoutSeconds() : 60;
+        while (true) {
+            try {
+                String body = mapper.writeValueAsString(mapper.createObjectNode()
+                        .put("model", props.getEmbeddingModel())
+                        .set("input", mapper.valueToTree(texts)));
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(props.getBaseUrl() + "/embeddings"))
+                        .header("Content-Type", "application/json")
+                        .header("Authorization", "Bearer " + props.getApiKey())
+                        .timeout(Duration.ofSeconds(timeout))
+                        .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build();
+                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+                if (resp.statusCode() == 429) {
+                    if (rateLimited != null) {
+                        rateLimited[0] = true;
+                    }
+                    if (retries < maxRetries) {
+                        retries++;
+                        sleepBackoff(retries);
+                        continue;
+                    }
+                    log.error("embed rate limited after {} retries trace={}", retries,
+                            com.readingnotes.common.TraceContext.current());
+                    throw new BusinessException(ErrorCode.EMBED_TIMEOUT);
+                }
+                if (resp.statusCode() != 200) {
+                    log.error("embed http status={} body={} trace={}", resp.statusCode(),
+                            truncate(resp.body()), com.readingnotes.common.TraceContext.current());
+                    throw new BusinessException(ErrorCode.DOUBAO_DOWN);
+                }
+                JsonNode root = mapper.readTree(resp.body());
+                List<List<Float>> out = new ArrayList<>();
+                for (JsonNode item : root.path("data")) {
+                    List<Float> vector = new ArrayList<>();
+                    for (JsonNode v : item.path("embedding")) {
+                        vector.add((float) v.asDouble());
+                    }
+                    out.add(vector);
+                }
+                if (out.size() != texts.size()) {
+                    log.error("embed size mismatch input={} output={}", texts.size(), out.size());
+                    throw new BusinessException(ErrorCode.DOUBAO_DOWN);
+                }
+                return out;
+            } catch (BusinessException e) {
+                // 网络类失败（非 429）也退避重试，超时/不可用都可能瞬时
+                if (e.getCode() == 70003 && retries < maxRetries) {
+                    retries++;
+                    sleepBackoff(retries);
+                    continue;
+                }
+                throw e;
+            } catch (java.net.http.HttpTimeoutException te) {
+                log.error("embed timeout {}s trace={}", timeout,
+                        com.readingnotes.common.TraceContext.current());
+                throw new BusinessException(ErrorCode.EMBED_TIMEOUT);
+            } catch (Exception e) {
+                if (retries < maxRetries) {
+                    retries++;
+                    sleepBackoff(retries);
+                    continue;
+                }
+                log.error("embed failed trace={}", com.readingnotes.common.TraceContext.current(), e);
+                throw new BusinessException(ErrorCode.EMBED_TIMEOUT);
+            }
+        }
+    }
+
+    /** 指数退避 1s→2s→4s（需求 F2.4） */
+    private void sleepBackoff(int attempt) {
+        long sleep = (long) Math.pow(2, attempt) * 1000L;
+        log.warn("embed retry {}/{} sleep={}ms trace={}", attempt, props.getMaxRetries(), sleep,
+                com.readingnotes.common.TraceContext.current());
+        try {
+            Thread.sleep(sleep);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException(ErrorCode.EMBED_TIMEOUT);
+        }
+    }
+
     /** 检查 key 是否配置；缺失时给出明确中文提示而非崩溃 */
     private void ensureKey() {
         if (props.getApiKey() == null || props.getApiKey().isBlank()) {
