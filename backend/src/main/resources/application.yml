@@ -43,8 +43,13 @@ doubao:
   embedding-timeout-seconds: 35   # 单批 Embedding 超时（需求 §8：30s 超时 → 30002）
 
 # Chroma 向量库（Server 模式）
+# api-version: v2 对应 chromadb >= 1.0（推荐，pip install chromadb==1.5.9）
+#              v1 对应 chromadb 0.4.x ~ 0.6.x（旧版，1.x 服务端已移除 v1，会返回 410）
 chroma:
   base-url: ${CHROMA_BASE_URL:http://localhost:8000}
+  api-version: ${CHROMA_API_VERSION:v2}
+  tenant: ${CHROMA_TENANT:default_tenant}
+  database: ${CHROMA_DATABASE:default_database}
   health-check-interval-ms: 30000
 
 # RAG 默认参数（F5.2，可在设置页运行时调整）

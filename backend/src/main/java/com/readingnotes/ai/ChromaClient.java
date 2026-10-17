@@ -17,6 +17,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Chroma 向量库客户端（Server 模式，chroma run --port 8000）
@@ -26,6 +27,17 @@ import java.util.Map;
  * - 查询：query（含 where 元数据过滤，cosine）
  * - 运维：delete-by-where、snapshot（F5.5 备份）
  * 集合分布（数据库设计 §6）：book_{book_id} 原书切片；notes_all 笔记回流
+ * <p>
+ * <b>API 版本兼容</b>：chromadb 1.x 起服务端只实现 v2，v1 路径统一返回 410，
+ * 因此本客户端默认走 v2，并通过 {@code chroma.api-version} 保留回退到 v1 的能力。
+ * 两种模式仅在「路径」与「query_embeddings 的序列化形状」上有差异：
+ * <pre>
+ *   v2: /api/v2/tenants/{tenant}/databases/{database}/collections/{uuid}/upsert
+ *       query_embeddings = [[0.1, 0.2, ...]]        （二维数组）
+ *   v1: /api/v1/collections/{name}/upsert
+ *       query_embeddings = {"0": [0.1, 0.2, ...]}    （字典）
+ * </pre>
+ * 响应体两种模式一致，均为按查询分组的嵌套数组（ids[0]、documents[0]、distances[0]）。
  */
 @Slf4j
 @Component
@@ -35,19 +47,37 @@ public class ChromaClient {
     private final HttpClient http;
     private final ObjectMapper mapper;
 
+    /** true = chromadb 1.x 的 /api/v2 布局；false = 旧版 /api/v1 布局 */
+    private final boolean v2;
+
+    /** 集合根路径，形如 /api/v2/tenants/default_tenant/databases/default_database/collections 或 /api/v1/collections */
+    private final String collectionsPath;
+
+    /**
+     * v2 模式下集合按 UUID 寻址（传名称会 400 Collection ID is not a valid UUIDv4），
+     * 这里缓存 name -> collection_id，避免每次 upsert/query 前多一次解析请求。
+     * 集合被删除或外部重建后 UUID 会变，故在收到 404 时失效并重新解析。
+     */
+    private final Map<String, String> collectionIds = new ConcurrentHashMap<>();
+
     public ChromaClient(ChromaProperties props) {
         this.props = props;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
         this.mapper = new ObjectMapper();
+        this.v2 = !"v1".equalsIgnoreCase(props.getApiVersion());
+        this.collectionsPath = v2
+                ? "/api/v2/tenants/" + enc(props.getTenant(), "default_tenant")
+                        + "/databases/" + enc(props.getDatabase(), "default_database") + "/collections"
+                : "/api/v1/collections";
     }
 
-    /** 健康检查：GET /api/v1/heartbeat */
+    /** 健康检查：v2 = GET /api/v2/heartbeat，v1 = GET /api/v1/heartbeat */
     public boolean isHealthy() {
         try {
             HttpResponse<String> resp = http.send(
-                    HttpRequest.newBuilder().uri(URI.create(props.getBaseUrl() + "/api/v1/heartbeat"))
+                    HttpRequest.newBuilder().uri(URI.create(props.getBaseUrl() + (v2 ? "/api/v2/heartbeat" : "/api/v1/heartbeat")))
                             .timeout(Duration.ofSeconds(3)).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             return resp.statusCode() == 200;
@@ -62,23 +92,40 @@ public class ChromaClient {
         }
     }
 
-    /** 创建集合（维度校验，需求 F2.4） */
+    /** 创建集合（维度校验，需求 F2.4）；已存在时幂等返回 */
     public void createCollection(String name, int dim) {
         ensureHealthy();
         try {
+            // 先解析：v2 下若已存在可直接拿到 UUID 返回，同时把 id 填进缓存
+            if (resolveCollectionId(name) != null) {
+                return;
+            }
             ObjectNode body = mapper.createObjectNode();
             body.put("name", name);
             ObjectNode meta = mapper.createObjectNode();
             meta.put("hnsw:space", "cosine");
             meta.put("dimension", dim);
             body.set("metadata", meta);
-            HttpRequest req = post("/api/v1/collections", body);
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            // 已存在时返回 409 属正常，忽略
-            if (resp.statusCode() != 200 && resp.statusCode() != 409) {
-                log.error("create collection {} status={} body={}", name, resp.statusCode(), resp.body());
-                throw new BusinessException(ErrorCode.CHROMA_DOWN);
+            if (v2) {
+                // 并发下两个请求同时判定“不存在”时，get_or_create 可避免一方抛 409
+                body.put("get_or_create", true);
             }
+            HttpRequest req = post(collectionsPath, body);
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 200) {
+                JsonNode id = mapper.readTree(resp.body()).path("id");
+                if (!id.isMissingNode() && !id.asText().isEmpty()) {
+                    collectionIds.put(name, id.asText());
+                }
+                return;
+            }
+            // 已存在时返回 409 属正常：清掉缓存让后续请求重新解析出真实 UUID
+            if (resp.statusCode() == 409) {
+                collectionIds.remove(name);
+                return;
+            }
+            log.error("create collection {} status={} body={}", name, resp.statusCode(), resp.body());
+            throw new BusinessException(ErrorCode.CHROMA_DOWN);
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
@@ -105,8 +152,15 @@ public class ChromaClient {
             body.set("embeddings", mapper.valueToTree(embeddings));
             body.set("documents", mapper.valueToTree(documents));
             body.set("metadatas", mapper.valueToTree(metadatas));
-            HttpRequest req = post("/api/v1/collections/" + encode(collection) + "/upsert", body);
+            String cid = resolveOrThrow(collection);
+            HttpRequest req = post(collectionsPath + "/" + cid + "/upsert", body);
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            // 集合被外部删除后重建，缓存的 UUID 会失效：失效重解析后重试一次
+            if (resp.statusCode() == 404) {
+                collectionIds.remove(collection);
+                cid = resolveOrThrow(collection);
+                resp = http.send(post(collectionsPath + "/" + cid + "/upsert", body), HttpResponse.BodyHandlers.ofString());
+            }
             if (resp.statusCode() != 200) {
                 log.error("upsert failed collection={} status={} body={}", collection, resp.statusCode(), resp.body());
                 throw new BusinessException(ErrorCode.CHROMA_DOWN);
@@ -131,14 +185,25 @@ public class ChromaClient {
         ensureHealthy();
         try {
             ObjectNode body = mapper.createObjectNode();
-            body.set("query_embeddings", mapper.createObjectNode().set("0", mapper.valueToTree(queryEmbedding)));
+            // v2 用二维数组，v1 用 {"0": [...]} 字典；响应体两者一致，均为嵌套数组
+            if (v2) {
+                body.set("query_embeddings", mapper.valueToTree(List.of(queryEmbedding)));
+            } else {
+                body.set("query_embeddings", mapper.createObjectNode().set("0", mapper.valueToTree(queryEmbedding)));
+            }
             body.put("n_results", nResults);
             body.put("include", mapper.valueToTree(List.of("documents", "metadatas", "distances")));
             if (where != null && !where.isEmpty()) {
                 body.set("where", mapper.valueToTree(where));
             }
-            HttpRequest req = post("/api/v1/collections/" + encode(collection) + "/query", body);
+            String cid = resolveOrThrow(collection);
+            HttpRequest req = post(collectionsPath + "/" + cid + "/query", body);
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 404) {
+                collectionIds.remove(collection);
+                cid = resolveOrThrow(collection);
+                resp = http.send(post(collectionsPath + "/" + cid + "/query", body), HttpResponse.BodyHandlers.ofString());
+            }
             if (resp.statusCode() != 200) {
                 log.error("query failed collection={} status={} body={}", collection, resp.statusCode(), resp.body());
                 throw new BusinessException(ErrorCode.CHROMA_DOWN);
@@ -159,8 +224,14 @@ public class ChromaClient {
         try {
             ObjectNode body = mapper.createObjectNode();
             body.set("where", mapper.valueToTree(where));
-            HttpRequest req = post("/api/v1/collections/" + encode(collection) + "/delete", body);
+            String cid = resolveOrThrow(collection);
+            HttpRequest req = post(collectionsPath + "/" + cid + "/delete", body);
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 404) {
+                // 集合不存在时等价于“无向量可删”，不视为故障（删除笔记/书籍的幂等要求）
+                log.debug("delete-by-where skipped, collection {} not found", collection);
+                return;
+            }
             if (resp.statusCode() != 200) {
                 log.error("delete failed collection={} status={} body={}", collection, resp.statusCode(), resp.body());
                 throw new BusinessException(ErrorCode.CHROMA_DOWN);
@@ -173,12 +244,18 @@ public class ChromaClient {
         }
     }
 
-    /** 删除整个集合（F1.2 删除书籍、重建知识库时） */
+    /**
+     * 删除整个集合（F1.2 删除书籍、重建知识库时）
+     * <p>
+     * 注意：v2 的 upsert/query 只能按 UUID 寻址，但“删除集合”这一操作仍按名称寻址
+     * （实测 DELETE /api/v2/.../collections/{name} 返回 200），因此这里统一传 encode(name)。
+     */
     public void deleteCollection(String name) {
         ensureHealthy();
+        collectionIds.remove(name);
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(props.getBaseUrl() + "/api/v1/collections/" + encode(name)))
+                    .uri(URI.create(props.getBaseUrl() + collectionsPath + "/" + encode(name)))
                     .timeout(Duration.ofSeconds(10))
                     .DELETE().build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
@@ -211,6 +288,53 @@ public class ChromaClient {
         return hits;
     }
 
+    /**
+     * 解析集合寻址键：v2 返回 UUID，v1 返回 URL 编码后的名称。
+     *
+     * @return 集合键；集合不存在时返回 {@code null}
+     */
+    private String resolveCollectionId(String name) {
+        if (!v2) {
+            return encode(name);
+        }
+        String cached = collectionIds.get(name);
+        if (cached != null) {
+            return cached;
+        }
+        try {
+            HttpResponse<String> resp = http.send(
+                    HttpRequest.newBuilder()
+                            .uri(URI.create(props.getBaseUrl() + collectionsPath + "/" + encode(name)))
+                            .timeout(Duration.ofSeconds(10)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 200) {
+                JsonNode id = mapper.readTree(resp.body()).path("id");
+                if (!id.isMissingNode() && !id.asText().isEmpty()) {
+                    collectionIds.put(name, id.asText());
+                    return id.asText();
+                }
+                return null;
+            }
+            if (resp.statusCode() != 404) {
+                log.warn("resolve collection {} status={} body={}", name, resp.statusCode(), resp.body());
+            }
+            return null;
+        } catch (Exception e) {
+            log.warn("resolve collection {} failed: {}", name, e.toString());
+            return null;
+        }
+    }
+
+    /** 解析集合键，不存在则抛业务异常（调用方应在 upsert/query 前先 createCollection） */
+    private String resolveOrThrow(String name) {
+        String cid = resolveCollectionId(name);
+        if (cid == null) {
+            log.error("collection {} not found, caller must createCollection first", name);
+            throw new BusinessException(ErrorCode.CHROMA_DOWN);
+        }
+        return cid;
+    }
+
     private HttpRequest post(String path, JsonNode body) throws Exception {
         return HttpRequest.newBuilder()
                 .uri(URI.create(props.getBaseUrl() + path))
@@ -222,6 +346,14 @@ public class ChromaClient {
 
     private String encode(String name) {
         return name.replace("/", "%2F");
+    }
+
+    /** 路径段安全编码，配置缺失时回退默认值 */
+    private static String enc(String seg, String fallback) {
+        if (seg == null || seg.isEmpty()) {
+            return fallback;
+        }
+        return seg.replace("/", "%2F");
     }
 
     /** 检索命中记录 */
