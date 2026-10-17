@@ -40,6 +40,7 @@ doubao:
   embedding-dim: 1024
   batch-size: 16          # Embedding 批量大小（F2.4）
   max-retries: 3          # 429 指数退避重试上限
+  embedding-timeout-seconds: 35   # 单批 Embedding 超时（需求 §8：30s 超时 → 30002）
 
 # Chroma 向量库（Server 模式）
 chroma:
@@ -60,7 +61,14 @@ rag:
 # 构建任务（F2）
 build:
   worker-threads: 1       # 串行队列，避免 Embedding 并发限流
-  chunk-soft-limit: 5000  # 单书切片软上限
+  chunk-soft-limit: 5000  # 单书切片软上限（超出仅红色警告，不阻塞）
+  chunk-hard-limit: 8000  # 单书切片硬上限（超出截断，保护内存与额度）
+  chunk-size-min: 200     # 切片粒度下限
+  chunk-size-max: 1200    # 切片粒度上限（粗 1000 / 中 600 / 细 300）
+  embedding-batch-size: 16
+  chapter-rate-warn-threshold: 0.5   # 章节识别率 < 50% 提示退化为纯向量检索
+  trash-retain-days: 7    # 回收站保留天数（F1.2）
+  trash-cleanup-cron: "0 30 3 * * ?" # 每日 03:30 清理过期书籍
 
 logging:
   level:
