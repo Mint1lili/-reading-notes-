@@ -55,9 +55,11 @@ class NoteExportServiceImplTest {
 
     private NoteExportServiceImpl exportService;
 
+    private AppProperties props;
+
     @BeforeEach
     void setUp() {
-        AppProperties props = new AppProperties();
+        props = new AppProperties();
         props.setExportsDir(tempDir.toString());
         props.setExportTtlHours(1);
         exportService = new NoteExportServiceImpl(noteRepository, tagRepository, props);
@@ -213,12 +215,84 @@ class NoteExportServiceImplTest {
     // ==================== 格式 ====================
 
     @Test
-    @DisplayName("pdf 格式本期未实现抛 10001")
-    void pdfFormat_notSupported() {
-        assertThatThrownBy(() -> exportService.export(List.of("note_1"), null, "selected", "pdf", false))
+    @DisplayName("非法格式（非 markdown/pdf）抛 10001")
+    void invalidFormat_rejected() {
+        assertThatThrownBy(() -> exportService.export(List.of("note_1"), null, "selected", "html", false))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).getCode())
                 .isEqualTo(ErrorCode.PARAM_ERROR.getCode());
+    }
+
+    // ==================== PDF 导出（§9.11 format=pdf） ====================
+
+    /**
+     * stub 掉 renderPdfBytes 的导出服务：PDF 渲染隔离字体依赖（CI Linux 可能无中文字体），
+     * 只验证 resolve→打包→返回链路；真实渲染由接口实测覆盖。
+     */
+    private NoteExportServiceImpl stubPdfService() {
+        return new NoteExportServiceImpl(noteRepository, tagRepository, props) {
+            @Override
+            byte[] renderPdfBytes(List<Note> notes, Map<String, List<Tag>> tagsMap,
+                                  boolean includeFrontMatter) {
+                return "%PDF-1.7\n%%EOF\n".getBytes(StandardCharsets.UTF_8);
+            }
+        };
+    }
+
+    @Test
+    @DisplayName("pdf selected 导出：zip 内单个 .pdf，note_count 正确")
+    void pdf_selected_singleFile() throws Exception {
+        Note n1 = note("note_1", "习惯的力量", "暗示 → 惯常行为 → 奖赏。", "book_1");
+        when(noteRepository.findById("note_1")).thenReturn(n1);
+
+        Map<String, Object> data = stubPdfService().export(
+                List.of("note_1"), null, "selected", "pdf", false);
+
+        assertThat(data.get("note_count")).isEqualTo(1);
+        Path zip = latestZip();
+        try (ZipFile zf = new ZipFile(zip.toFile())) {
+            Enumeration<? extends ZipEntry> en = zf.entries();
+            ZipEntry e = en.nextElement();
+            assertThat(e.getName()).endsWith(".pdf");
+            try (InputStream in = zf.getInputStream(e)) {
+                assertThat(new String(in.readAllBytes(), StandardCharsets.UTF_8)).startsWith("%PDF");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("pdf book 范围：整本书笔记合并为单个 PDF")
+    void pdf_bookScope_wholeBook() throws Exception {
+        Note n1 = note("note_1", "第一章", "正文1", "book_1");
+        Note n2 = note("note_2", "第二章", "正文2", "book_1");
+        when(noteRepository.findByBookId("book_1")).thenReturn(List.of(n1, n2));
+
+        Map<String, Object> data = stubPdfService().export(
+                null, "book_1", "book", "pdf", true);
+
+        verify(noteRepository).findByBookId("book_1");
+        assertThat(data.get("note_count")).isEqualTo(2);
+        Path zip = latestZip();
+        try (ZipFile zf = new ZipFile(zip.toFile())) {
+            Enumeration<? extends ZipEntry> en = zf.entries();
+            int count = 0;
+            while (en.hasMoreElements()) {
+                ZipEntry e = en.nextElement();
+                assertThat(e.getName()).endsWith(".pdf");
+                count++;
+            }
+            assertThat(count).isEqualTo(1); // 合并单文件
+        }
+    }
+
+    @Test
+    @DisplayName("pdf 导出无笔记抛 50001")
+    void pdf_noNotes_throwsNotFound() {
+        when(noteRepository.findByBookId("book_x")).thenReturn(List.of());
+        assertThatThrownBy(() -> stubPdfService().export(null, "book_x", "book", "pdf", false))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getCode())
+                .isEqualTo(ErrorCode.NOTE_NOT_FOUND.getCode());
     }
 
     // ==================== front-matter 开关与转义 ====================

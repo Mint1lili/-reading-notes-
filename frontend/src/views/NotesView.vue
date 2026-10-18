@@ -21,11 +21,43 @@
         <el-option label="未回流" value="false" />
       </el-select>
       <span class="spacer" />
-      <el-button :disabled="!selectedIds.length" @click="exportSelected">
-        导出选中{{ selectedIds.length ? ` (${selectedIds.length})` : '' }}
+      <el-button :disabled="!selectedIds.length && !filters.bookId" @click="openExport">
+        导出{{ selectedIds.length ? ` (${selectedIds.length})` : '' }}
       </el-button>
       <el-button type="primary" @click="openCreate">+ 新建笔记</el-button>
     </div>
+
+    <!-- 导出对话框（§9.11：markdown / pdf，选中 / 整本书） -->
+    <el-dialog v-model="exportDialog" title="导出笔记" width="440px">
+      <el-form label-width="70px">
+        <el-form-item label="范围">
+          <el-radio-group v-model="exportForm.scope">
+            <el-radio value="selected" :disabled="!selectedIds.length">选中笔记（{{ selectedIds.length }} 篇）</el-radio>
+            <el-radio value="book" :disabled="!filters.bookId">
+              整本书{{ filters.bookId ? `：${bookTitle}` : '（请先在顶部选择书籍）' }}
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="格式">
+          <el-select v-model="exportForm.format" style="width: 100%">
+            <el-option label="Markdown（每条一个 .md 文件）" value="markdown" />
+            <el-option label="PDF（合并单文件，中文排版）" value="pdf" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="exportForm.format === 'markdown'" label="front-matter">
+          <el-switch v-model="exportForm.includeFrontMatter" active-text="YAML 头部（书名/页码/标签）" />
+        </el-form-item>
+        <el-alert
+          v-if="exportForm.format === 'pdf'"
+          type="info" :closable="false" show-icon
+          title="PDF 为一页一篇的合并文件；整本书导出时按书内所有未删除笔记生成。"
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="exportDialog = false">取消</el-button>
+        <el-button type="primary" :loading="exporting" @click="onExport">导出</el-button>
+      </template>
+    </el-dialog>
 
     <div class="body">
       <!-- ==================== 左栏：视图 + 标签树（借鉴 Obsidian 标签面板） ==================== -->
@@ -228,7 +260,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createNote, createNoteLink, createTag, deleteNote, exportNotes,
@@ -329,7 +361,7 @@ function onKeywordInput() {
   timer = setTimeout(() => { page.value = 1; reload() }, 300)
 }
 
-// ==================== 选中与导出 ====================
+// ==================== 选中与导出（§9.11：markdown / pdf，选中 / 整本书） ====================
 
 const toggleSelect = (id) => {
   const i = selectedIds.value.indexOf(id)
@@ -337,19 +369,37 @@ const toggleSelect = (id) => {
   else selectedIds.value.push(id)
 }
 
-async function exportSelected() {
+const exportDialog = ref(false)
+const exporting = ref(false)
+const exportForm = reactive({ scope: 'selected', format: 'markdown', includeFrontMatter: true })
+const bookTitle = computed(() =>
+  books.value.find((b) => b.book_id === filters.bookId)?.title || '')
+
+function openExport() {
+  // 默认范围跟随当前可用项：选中了笔记优先 selected，否则整本书
+  exportForm.scope = selectedIds.value.length ? 'selected' : 'book'
+  exportDialog.value = true
+}
+
+async function onExport() {
+  exporting.value = true
   try {
-    const data = await exportNotes({
-      note_ids: selectedIds.value,
-      scope: 'selected',
-      format: 'markdown',
-      include_front_matter: true
-    })
+    const payload = {
+      scope: exportForm.scope,
+      format: exportForm.format,
+      include_front_matter: exportForm.includeFrontMatter
+    }
+    if (exportForm.scope === 'selected') payload.note_ids = selectedIds.value
+    else payload.book_id = filters.bookId
+    const data = await exportNotes(payload)
     // download_url 形如 /api/v1/files/exports/xxx.zip，走 Vite 代理
     window.location.href = data.download_url
     ElMessage.success(`已导出 ${data.note_count} 条笔记`)
-    selectedIds.value = []
-  } catch { /* 拦截器已提示 */ }
+    exportDialog.value = false
+    if (exportForm.scope === 'selected') selectedIds.value = []
+  } catch { /* 拦截器已提示 */ } finally {
+    exporting.value = false
+  }
 }
 
 // ==================== 抽屉：新建 / 详情 / 保存 ====================

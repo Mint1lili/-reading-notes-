@@ -9,9 +9,20 @@ import com.readingnotes.repository.NoteRepository;
 import com.readingnotes.repository.TagRepository;
 import com.readingnotes.service.NoteExportService;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.fontbox.ttf.TrueTypeCollection;
+import org.apache.fontbox.ttf.TrueTypeFont;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDType0Font;
 import org.springframework.stereotype.Service;
 
+import java.awt.Color;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -28,11 +39,13 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * 笔记导出实现（API 文档 §9.11）
+ * 笔记导出实现（API 文档 §9.11，需求 §3.5）
  *
- * <p>流程：解析 scope → 查笔记 → 逐个渲染 Markdown（可选 YAML front-matter）
+ * <p>流程：解析 scope → 查笔记 → 渲染（markdown 逐条 / pdf 合并单文件）
  * → 打包 zip 落到 app.exports-dir → 返回下载地址与过期时间。
- * 只用 JDK 内置 zip（java.util.zip），不引第三方依赖。</p>
+ * zip 用 JDK 内置（java.util.zip）；PDF 用 Apache PDFBox 3（系统已含依赖）。
+ * 中文渲染依赖系统中文字体（Windows 雅黑/宋体/黑体 → Linux Noto/文泉驿），
+ * 找不到字体时抛 INTERNAL_ERROR 明确提示，不做乱码降级。</p>
  */
 @Slf4j
 @Service
@@ -40,6 +53,14 @@ public class NoteExportServiceImpl implements NoteExportService {
 
     private static final DateTimeFormatter STAMP =
             DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss").withZone(ZoneOffset.ofHours(8));
+
+    /** 中文字体候选路径（Windows → Linux CI/服务器） */
+    private static final List<Path> FONT_CANDIDATES = List.of(
+            Paths.get("C:\\Windows\\Fonts\\msyh.ttc"),      // 微软雅黑
+            Paths.get("C:\\Windows\\Fonts\\simsun.ttc"),    // 宋体
+            Paths.get("C:\\Windows\\Fonts\\simhei.ttf"),    // 黑体
+            Paths.get("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            Paths.get("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"));
 
     private final NoteRepository noteRepository;
     private final TagRepository tagRepository;
@@ -57,10 +78,9 @@ public class NoteExportServiceImpl implements NoteExportService {
                                       String format, boolean includeFrontMatter) {
         String safeScope = (scope == null || scope.isBlank()) ? "selected" : scope.trim();
         String safeFormat = (format == null || format.isBlank()) ? "markdown" : format.trim();
-
-        // pdf 导出本期未实现（接口文档列出，但需 PDFBox 排版，优先级最低）
-        if (!"markdown".equalsIgnoreCase(safeFormat)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持的导出格式: " + safeFormat + "，请使用 markdown");
+        boolean pdf = "pdf".equalsIgnoreCase(safeFormat);
+        if (!pdf && !"markdown".equalsIgnoreCase(safeFormat)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持的导出格式: " + safeFormat + "，请使用 markdown 或 pdf");
         }
 
         List<Note> notes = resolveNotes(noteIds, bookId, safeScope);
@@ -72,7 +92,8 @@ public class NoteExportServiceImpl implements NoteExportService {
         Map<String, List<Tag>> tagsMap = tagRepository.findByNoteIds(
                 notes.stream().map(Note::getNoteId).toList());
 
-        Path zipPath = writeZip(notes, tagsMap, includeFrontMatter);
+        Path zipPath = pdf ? writePdfZip(notes, tagsMap, includeFrontMatter)
+                : writeZip(notes, tagsMap, includeFrontMatter);
 
         Map<String, Object> data = new HashMap<>();
         data.put("download_url", "/api/v1/files/exports/" + zipPath.getFileName());
@@ -82,7 +103,8 @@ public class NoteExportServiceImpl implements NoteExportService {
         data.put("note_count", notes.size());
         data.put("expires_at", Instant.now().plusSeconds(props.getExportTtlHours() * 3600L)
                 .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString());
-        log.info("notes exported: count={}, zip={}", notes.size(), zipPath.getFileName());
+        log.info("notes exported: format={}, count={}, zip={}", safeFormat, notes.size(),
+                zipPath.getFileName());
         return data;
     }
 
@@ -139,9 +161,212 @@ public class NoteExportServiceImpl implements NoteExportService {
         }
     }
 
-    /** 单篇 Markdown：可选 YAML front-matter + 正文 */
-    private String render(Note n, List<Tag> tags, boolean includeFrontMatter) {
+    // ==================== PDF 导出（§9.11 format=pdf） ====================
+
+    /** 打包 PDF：单文件（整本书或选中笔记合并渲染），zip 内放 .pdf */
+    private Path writePdfZip(List<Note> notes, Map<String, List<Tag>> tagsMap,
+                             boolean includeFrontMatter) {
+        try {
+            Path dir = Paths.get(props.getExportsDir());
+            Files.createDirectories(dir);
+            String stamp = STAMP.format(Instant.now());
+            Path zip = dir.resolve("export_" + stamp + ".zip");
+            byte[] pdf = renderPdfBytes(notes, tagsMap, includeFrontMatter);
+            try (ZipOutputStream zos = new ZipOutputStream(
+                    Files.newOutputStream(zip), StandardCharsets.UTF_8)) {
+                String pdfName = pdfFileName(notes);
+                zos.putNextEntry(new ZipEntry(pdfName));
+                zos.write(pdf);
+                zos.closeEntry();
+            }
+            return zip;
+        } catch (IOException e) {
+            log.error("write export pdf zip failed", e);
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "导出文件写入失败，请检查磁盘空间");
+        }
+    }
+
+    /**
+     * 渲染 PDF 字节（package-private 供测试 override 隔离字体依赖）：
+     * 每篇笔记从新页开始，标题 + 元数据 + 正文折行，页脚页码。
+     */
+    byte[] renderPdfBytes(List<Note> notes, Map<String, List<Tag>> tagsMap,
+                          boolean includeFrontMatter) {
+        PDDocument doc = new PDDocument();
+        try {
+            PDFont font = loadCjkFont(doc);
+            final float margin = 56f;          // 页边距 pt（≈2cm）
+            final float pageW = PDRectangle.A4.getWidth() - margin * 2;   // 595-112
+            final float titleSize = 16f, metaSize = 10f, bodySize = 11f;
+            final float lineHeight = 17f, bodyLine = 15f;
+            final int bodyChars = Math.max(1, (int) (pageW / bodySize));  // 每行近似字符数
+            final int metaChars = Math.max(1, (int) (pageW / metaSize));
+
+            PDPage page = new PDPage(PDRectangle.A4);
+            doc.addPage(page);
+            PDPageContentStream cs = new PDPageContentStream(doc, page);
+            float y = PDRectangle.A4.getHeight() - margin;
+            int pageNo = 1;
+
+            for (int i = 0; i < notes.size(); i++) {
+                Note n = notes.get(i);
+                List<Tag> tags = tagsMap.getOrDefault(n.getNoteId(), List.of());
+                // 每篇笔记从新页开始（第一篇已在首页）
+                if (i > 0) {
+                    cs.close();
+                    page = new PDPage(PDRectangle.A4);
+                    doc.addPage(page);
+                    cs = new PDPageContentStream(doc, page);
+                    y = PDRectangle.A4.getHeight() - margin;
+                    pageNo++;
+                }
+                // 标题
+                cs.beginText();
+                cs.setFont(font, titleSize);
+                cs.setNonStrokingColor(new Color(0x1F, 0x29, 0x37));
+                cs.newLineAtOffset(margin, y - titleSize);
+                cs.showText(truncate(titleOf(n), 40));
+                cs.endText();
+                y -= titleSize + 6;
+                // 元数据行（书名 / 页码 / 标签 / 时间）
+                cs.beginText();
+                cs.setFont(font, metaSize);
+                cs.setNonStrokingColor(new Color(0x8C, 0x8C, 0x8C));
+                cs.newLineAtOffset(margin, y - metaSize);
+                cs.showText(truncate(metaLine(n, tags), metaChars));
+                cs.endText();
+                y -= metaSize + 10;
+                // 分隔线
+                cs.setStrokingColor(new Color(0xDC, 0xDF, 0xE6));
+                cs.moveTo(margin, y);
+                cs.lineTo(margin + pageW, y);
+                cs.stroke();
+                y -= 12;
+                // 正文折行（按换行分段 → 按字符数切行）
+                String content = n.getContent() == null ? "" : n.getContent();
+                cs.setFont(font, bodySize);
+                cs.setNonStrokingColor(new Color(0x33, 0x33, 0x33));
+                for (String para : content.split("\\r?\\n")) {
+                    for (String line : wrap(para, bodyChars)) {
+                        if (y - bodyLine < margin) {           // 换页
+                            cs.close();
+                            page = new PDPage(PDRectangle.A4);
+                            doc.addPage(page);
+                            cs = new PDPageContentStream(doc, page);
+                            y = PDRectangle.A4.getHeight() - margin;
+                            pageNo++;
+                        }
+                        cs.beginText();
+                        cs.newLineAtOffset(margin, y - bodySize);
+                        cs.showText(line);
+                        cs.endText();
+                        y -= bodyLine;
+                    }
+                }
+                y -= 10;
+            }
+            // 页脚页码（简化：逐页补当前页号）
+            cs.close();
+            for (int p = 1; p <= doc.getNumberOfPages(); p++) {
+                PDPageContentStream footer = new PDPageContentStream(
+                        doc, doc.getPage(p - 1), PDPageContentStream.AppendMode.APPEND, true, true);
+                footer.beginText();
+                footer.setFont(font, 9f);
+                footer.setNonStrokingColor(new Color(0x9E, 0x9E, 0x9E));
+                footer.newLineAtOffset(margin, 30f);
+                footer.showText("第 " + p + " 页");
+                footer.endText();
+                footer.close();
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            doc.save(out);
+            return out.toByteArray();
+        } catch (IOException e) {
+            log.error("render pdf failed", e);
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "PDF 渲染失败，请重试");
+        } finally {
+            try { doc.close(); } catch (IOException ignored) { }
+        }
+    }
+
+    /** 加载系统中文字体：候选路径逐个尝试（TTC 取第 0 个字体），全失败抛 10004 */
+    private static PDFont loadCjkFont(PDDocument doc) {
+        for (Path p : FONT_CANDIDATES) {
+            if (!Files.exists(p)) {
+                continue;
+            }
+            try (InputStream in = Files.newInputStream(p)) {
+                if (p.getFileName().toString().toLowerCase().endsWith(".ttc")) {
+                    TrueTypeCollection ttc = new TrueTypeCollection(in);
+                    TrueTypeFont[] holder = new TrueTypeFont[1];
+                    ttc.processAllFonts(font -> { if (holder[0] == null) holder[0] = font; });
+                    if (holder[0] == null) {
+                        throw new IOException("empty ttc: " + p);
+                    }
+                    return PDType0Font.load(doc, holder[0], true);
+                }
+                return PDType0Font.load(doc, in, true);
+            } catch (IOException e) {
+                log.warn("font load failed: {} ({})", p, e.getMessage());
+            }
+        }
+        throw new BusinessException(ErrorCode.INTERNAL_ERROR,
+                "系统缺少中文字体，无法导出 PDF（Windows 请确保 C:\\Windows\\Fonts 存在雅黑/宋体/黑体）");
+    }
+
+    /** 按字符宽度折行（中文按字符计，长英文可能断词，可接受） */
+    private static List<String> wrap(String text, int maxChars) {
+        List<String> lines = new ArrayList<>();
+        if (text == null || text.isEmpty()) {
+            lines.add("");
+            return lines;
+        }
+        for (int i = 0; i < text.length(); i += maxChars) {
+            lines.add(text.substring(i, Math.min(i + maxChars, text.length())));
+        }
+        return lines;
+    }
+
+    /** 笔记标题，空则用 note_id */
+    private static String titleOf(Note n) {
+        return (n.getTitle() == null || n.getTitle().isBlank()) ? n.getNoteId() : n.getTitle();
+    }
+
+    /** 元数据行：书名｜页码｜标签｜更新时间 */
+    private static String metaLine(Note n, List<Tag> tags) {
         StringBuilder sb = new StringBuilder();
+        if (n.getSourceBookId() != null && !n.getSourceBookId().isBlank()) {
+            sb.append("书: ").append(n.getSourceBookId());
+        }
+        if (n.getSourcePage() != null) {
+            sb.append(" ｜ 页: ").append(n.getSourcePage());
+        }
+        if (!tags.isEmpty()) {
+            sb.append(" ｜ 标签: ").append(tags.stream().map(Tag::getName)
+                    .collect(java.util.stream.Collectors.joining(", ")));
+        }
+        if (n.getUpdatedAt() != null) {
+            sb.append(" ｜ 更新: ").append(n.getUpdatedAt());
+        }
+        return sb.length() == 0 ? "（无来源信息）" : sb.toString();
+    }
+
+    /** PDF 文件名：整本书用书名，否则用时间戳 */
+    private static String pdfFileName(List<Note> notes) {
+        if (notes.size() == 1) {
+            return titleOf(notes.get(0)) + ".pdf";
+        }
+        return "笔记导出_" + STAMP.format(Instant.now()) + ".pdf";
+    }
+
+    /** 超长截断（避免 PDF 单行越界） */
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max) + "…";
+    }
+
+    /** 单篇 Markdown：可选 YAML front-matter + 正文 */
+    private String render(Note n, List<Tag> tags, boolean includeFrontMatter) {        StringBuilder sb = new StringBuilder();
         if (includeFrontMatter) {
             sb.append("---\n");
             sb.append("title: ").append(yaml(n.getTitle())).append('\n');
