@@ -1,5 +1,6 @@
 package com.readingnotes.common;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 /**
@@ -13,6 +14,9 @@ public class Result<T> {
     private int code;
     private String message;
     private T data;
+
+    /** 序列化为文档约定的 trace_id（响应头仍为 X-Trace-Id） */
+    @JsonProperty("trace_id")
     private String traceId;
 
     public static <T> Result<T> ok(T data) {

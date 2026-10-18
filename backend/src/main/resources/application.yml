@@ -29,6 +29,9 @@ app:
   logs-dir: ${APP_DATA_DIR:../data}/logs
   backups-dir: ${APP_DATA_DIR:../data}/backups
   prompts-dir: ${APP_DATA_DIR:../data}/config/prompts
+  # 笔记导出产物（API §9.11）：zip 落盘后由 /api/v1/files/exports/{fileName} 提供下载
+  exports-dir: ${APP_DATA_DIR:../data}/exports
+  export-ttl-hours: 1
 
 # 豆包大模型 API（火山引擎 Ark，OpenAI 兼容端点）
 # 生产必须通过环境变量注入：setx DOUBAO_API_KEY "你的key"

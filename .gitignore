@@ -8,6 +8,9 @@ target/
 data/
 backend/data/
 
+# Chroma 本地向量库运行时数据（chroma run 生成的 sqlite/目录）
+backend/chroma/
+
 # 本地配置
 .env
 *.local

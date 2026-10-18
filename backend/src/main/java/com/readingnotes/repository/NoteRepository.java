@@ -101,9 +101,10 @@ public class NoteRepository {
      * @param sourceType   按来源类型过滤（可空）
      * @param keyword      标题/正文模糊搜索（可空）
      * @param tagName      按标签名过滤（可空，阶段 2：join note_tag_map）
+     * @param indexed      按回流状态过滤（可空：true=已回流 is_indexed=1，false=未回流）
      */
     public List<Note> list(String sourceBookId, String sourceType, String keyword,
-                           String tagName, int page, int pageSize) {
+                           String tagName, Boolean indexed, int page, int pageSize) {
         StringBuilder sql = new StringBuilder("SELECT * FROM notes WHERE soft_delete = 0");
         java.util.List<Object> args = new java.util.ArrayList<>();
         if (sourceBookId != null && !sourceBookId.isBlank()) {
@@ -124,6 +125,10 @@ public class NoteRepository {
                     + " JOIN tags t ON m.tag_id = t.tag_id WHERE t.name = ?)");
             args.add(tagName);
         }
+        if (indexed != null) {
+            sql.append(" AND is_indexed = ?");
+            args.add(indexed ? 1 : 0);
+        }
         sql.append(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
         args.add(pageSize);
         args.add((page - 1) * pageSize);
@@ -131,7 +136,8 @@ public class NoteRepository {
     }
 
     /** 计数（与 list 同一套过滤条件，供分页返回 total） */
-    public long count(String sourceBookId, String sourceType, String keyword, String tagName) {
+    public long count(String sourceBookId, String sourceType, String keyword,
+                      String tagName, Boolean indexed) {
         StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM notes WHERE soft_delete = 0");
         java.util.List<Object> args = new java.util.ArrayList<>();
         if (sourceBookId != null && !sourceBookId.isBlank()) {
@@ -152,8 +158,23 @@ public class NoteRepository {
                     + " JOIN tags t ON m.tag_id = t.tag_id WHERE t.name = ?)");
             args.add(tagName);
         }
+        if (indexed != null) {
+            sql.append(" AND is_indexed = ?");
+            args.add(indexed ? 1 : 0);
+        }
         Long c = jdbc.queryForObject(sql.toString(), Long.class, args.toArray());
         return c == null ? 0 : c;
+    }
+
+    /**
+     * 按来源书查全部未软删笔记（导出 scope=book 用，API §9.11）
+     * 按创建时间升序，便于导出后按阅读顺序阅读。
+     */
+    public List<Note> findByBookId(String bookId) {
+        return jdbc.query(
+                "SELECT * FROM notes WHERE source_book_id = ? AND soft_delete = 0"
+                        + " ORDER BY source_page ASC, created_at ASC",
+                MAPPER, bookId);
     }
 
     /** 记录是否存在（含软删，用于区分"不存在"与"版本冲突"） */
