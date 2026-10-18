@@ -1,11 +1,16 @@
 package com.readingnotes.entity;
 
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import lombok.Data;
 
 /**
  * 书籍实体（数据库设计 §5.1 books 表）
+ *
+ * <p>序列化统一 snake_case（对齐 API 文档 §9 与前端读取约定，如 book_id）。</p>
  */
 @Data
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public class Book {
 
     private String bookId;
