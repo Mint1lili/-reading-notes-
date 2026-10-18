@@ -5,6 +5,7 @@ import com.readingnotes.common.ErrorCode;
 import com.readingnotes.entity.Note;
 import com.readingnotes.repository.NoteLinkRepository;
 import com.readingnotes.repository.NoteRepository;
+import com.readingnotes.service.NoteIndexService;
 import com.readingnotes.service.NoteService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -13,10 +14,14 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 /**
- * 笔记服务实现（F4 第一阶段：CRUD）
+ * 笔记服务实现（F4：CRUD + 阶段 5 知识回流联动）
  *
  * <p>职责：生成主键/时间戳/版本号、计算字数、校验参数、执行乐观锁编辑，
  * 并把"更新行数=0"细分为"版本冲突(50004)"与"笔记不存在(50001)"。</p>
+ *
+ * <p>阶段 5 回流联动（需求 §3.5 / API §9.4~9.8）：已回流笔记的
+ * 编辑走三步事务（删旧向量→重嵌→写新，失败 50002 回滚）；
+ * 软删/恢复/永久删除同步操作 notes_all 向量。</p>
  */
 @Slf4j
 @Service
@@ -24,10 +29,13 @@ public class NoteServiceImpl implements NoteService {
 
     private final NoteRepository noteRepository;
     private final NoteLinkRepository noteLinkRepository;
+    private final NoteIndexService noteIndexService;
 
-    public NoteServiceImpl(NoteRepository noteRepository, NoteLinkRepository noteLinkRepository) {
+    public NoteServiceImpl(NoteRepository noteRepository, NoteLinkRepository noteLinkRepository,
+                           NoteIndexService noteIndexService) {
         this.noteRepository = noteRepository;
         this.noteLinkRepository = noteLinkRepository;
+        this.noteIndexService = noteIndexService;
     }
 
     // ==================== 新建 ====================
@@ -92,14 +100,25 @@ public class NoteServiceImpl implements NoteService {
         return noteRepository.findById(noteId);
     }
 
-    // ==================== 编辑（乐观锁） ====================
+    // ==================== 编辑（乐观锁 + 回流三步事务） ====================
 
+    /**
+     * 编辑笔记：版本不匹配 50004、不存在 50001；回流笔记走三步事务。
+     *
+     * <p>三步事务顺序（§7.3：内容绝不先提交）：先查当前状态 → 若已回流，
+     * Chroma 删旧向量→重嵌→写新（任一步失败抛 50002，DB 尚未更新，天然回滚）
+     * → 再落库新内容并 +1 版本 → 更新回流状态为 INDEXED。</p>
+     */
     @Override
+    @Transactional
     public Note update(String noteId, String title, String content, int expectedVersion) {
         // 参数校验：正文必填（编辑也走内容更新，标题可空）
         if (content == null || content.isBlank()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "笔记正文不能为空");
         }
+        Note before = noteRepository.findById(noteId);
+        // 回流笔记：Chroma 三步事务（失败抛 50002，DB 未动）
+        noteIndexService.syncAfterEdit(before, title, content);
         int updated = noteRepository.updateContent(
                 noteId, title, content, countWords(content), expectedVersion);
         if (updated == 0) {
@@ -109,14 +128,25 @@ public class NoteServiceImpl implements NoteService {
             }
             throw new BusinessException(ErrorCode.NOTE_NOT_FOUND);
         }
+        // 回流笔记保持回流态：向量已按新内容重建，状态置 INDEXED + 新版本标记
+        if (before.getIsIndexed() != null && before.getIsIndexed() == 1) {
+            noteRepository.updateIndexState(noteId, 1, "INDEXED", NoteRepository.nowIso());
+        }
         // 返回更新后的最新数据（含 editor_version+1）
         return noteRepository.findById(noteId);
     }
 
     // ==================== 软删 / 恢复 / 永久删除 ====================
 
+    /**
+     * 软删除：先查（不存在 50001）→ 若已回流先删 notes_all 向量（失败 50002 回滚，
+     * 笔记保持未删）→ 置 soft_delete=1。保证软删后向量必清、无孤儿。
+     */
     @Override
+    @Transactional
     public void delete(String noteId) {
+        Note before = noteRepository.findById(noteId);
+        noteIndexService.syncAfterDelete(before);
         int updated = noteRepository.softDelete(noteId);
         if (updated == 0) {
             throw new BusinessException(ErrorCode.NOTE_NOT_FOUND);
@@ -124,20 +154,39 @@ public class NoteServiceImpl implements NoteService {
         log.info("note soft-deleted: id={}", noteId);
     }
 
+    /**
+     * 恢复：不存在 50001；本来未删幂等成功。曾回流（last_index_version 非空）的笔记
+     * 自动重新 Embedding 入库（§7.3.4），重建失败置 INDEX_FAILED 不影响恢复。
+     */
     @Override
     public void restore(String noteId) {
-        int updated = noteRepository.restore(noteId);
-        if (updated == 0 && !noteRepository.exists(noteId)) {
-            // 0 行且记录不存在 → 笔记不存在
+        Note raw = noteRepository.findRawById(noteId);
+        if (raw == null) {
             throw new BusinessException(ErrorCode.NOTE_NOT_FOUND);
         }
-        // 0 行但记录存在 = 本来就没删 → 幂等成功
+        if (raw.getSoftDelete() == null || raw.getSoftDelete() != 1) {
+            // 0 行但记录存在 = 本来就没删 → 幂等成功
+            log.info("note restored (already active): id={}", noteId);
+            return;
+        }
+        noteRepository.restore(noteId);
+        // 恢复后重新入库（内部吞掉失败，置 INDEX_FAILED 可手动重试）
+        noteIndexService.reindexAfterRestore(raw);
         log.info("note restored: id={}", noteId);
     }
 
+    /**
+     * 永久删除：不存在 50001；若已回流先删向量（失败 70001 阻断，避免孤儿向量）
+     * → 清理双向链接 → 硬删记录。
+     */
     @Override
     @Transactional
     public void purge(String noteId) {
+        Note raw = noteRepository.findRawById(noteId);
+        if (raw == null) {
+            throw new BusinessException(ErrorCode.NOTE_NOT_FOUND);
+        }
+        noteIndexService.syncAfterPurge(raw);
         // 阶段 3 联动：清理该笔记相关的双向链接（source 侧删除 + target 侧 target_jumpable=0）
         noteLinkRepository.purgeNoteLinks(noteId);
         int deleted = noteRepository.purge(noteId);

@@ -164,11 +164,18 @@
             </el-select>
           </el-form-item>
 
-          <!-- 回流开关：后端 9.8 未上线，先禁用并说明 -->
-          <el-form-item v-if="!isNew">
-            <el-tooltip content="9.8 知识回流接口尚未上线，上线后可直接开启" placement="top">
-              <el-switch v-model="dummyIndexed" disabled active-text="加入知识回流" />
-            </el-tooltip>
+          <!-- 回流开关（§9.8）：开启=切片向量入库，关闭=删向量；失败自动弹回 -->
+          <el-form-item v-if="!isNew" label="知识回流">
+            <el-switch
+              v-model="dummyIndexed"
+              active-text="加入检索（notes_all）"
+              inactive-text="不参与检索"
+              :loading="indexToggling"
+              @change="onToggleIndex"
+            />
+            <span v-if="indexStatus === 'INDEX_FAILED'" class="index-failed-hint">
+              上次回流失败，可重试开启
+            </span>
           </el-form-item>
 
           <!-- 双向链接 -->
@@ -225,7 +232,8 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createNote, createNoteLink, createTag, deleteNote, exportNotes,
-  getNote, getNoteLinks, listBooks, listNotes, listTags, purgeNote, updateNote
+  getNote, getNoteLinks, listBooks, listNotes, listTags, purgeNote,
+  toggleNoteIndex, updateNote
 } from '../api'
 
 const SOURCE_TYPES = [
@@ -257,6 +265,8 @@ const isNew = ref(false)
 const mdTab = ref('edit')
 const currentId = ref('')
 const dummyIndexed = ref(false)
+const indexToggling = ref(false)
+const indexStatus = ref('NOT_INDEXED')
 const form = reactive({ title: '', content: '', tagNames: [], editorVersion: 1 })
 const links = reactive({ outgoing: [], incoming: [] })
 const linkTarget = ref('')
@@ -374,6 +384,7 @@ async function openDetail(id) {
     form.editorVersion = d.editor_version || 1
     form.tagNames = (d.tags || []).map((t) => t.name)
     dummyIndexed.value = !!d.is_indexed
+    indexStatus.value = d.index_status || 'NOT_INDEXED'
     const l = await getNoteLinks(id)
     links.outgoing = l.outgoing || []
     links.incoming = l.incoming || []
@@ -385,6 +396,28 @@ async function openDetail(id) {
 }
 
 const jump = (id) => { if (id && id !== currentId.value) openDetail(id) }
+
+// ==================== 知识回流开关（§9.8） ====================
+
+/** 切换回流：成功后回显切片数；失败自动弹回开关并提示（后端 INDEX_FAILED 语义） */
+async function onToggleIndex(val) {
+  if (!currentId.value) { dummyIndexed.value = !val; return }
+  indexToggling.value = true
+  try {
+    const r = await toggleNoteIndex(currentId.value, val)
+    dummyIndexed.value = !!r.is_indexed
+    indexStatus.value = r.index_status || ''
+    ElMessage.success(val
+      ? `已加入知识回流（${r.indexed_chunk_count} 片切片入库）`
+      : '已移出知识回流')
+    reload()
+  } catch (e) {
+    dummyIndexed.value = !val // 失败弹回（需求 §3.5）
+    ElMessage.error(e?.response?.data?.message || '回流操作失败，请重试')
+  } finally {
+    indexToggling.value = false
+  }
+}
 
 async function save() {
   if (!form.content.trim()) {

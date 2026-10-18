@@ -95,6 +95,16 @@ public class NoteRepository {
     }
 
     /**
+     * 原始详情（含软删记录）：不存在返回 null。
+     * 供恢复/永久删除判断"不存在"与"已软删"（阶段 5 回流联动）。
+     */
+    public Note findRawById(String noteId) {
+        List<Note> list = jdbc.query(
+                "SELECT * FROM notes WHERE note_id = ?", MAPPER, noteId);
+        return list.isEmpty() ? null : list.get(0);
+    }
+
+    /**
      * 笔记列表（分页 + 可选过滤），仅未软删，按创建时间倒序。
      *
      * @param sourceBookId 按来源书过滤（可空）
@@ -207,6 +217,21 @@ public class NoteRepository {
     }
 
     // ==================== 编辑（乐观锁） ====================
+
+    /**
+     * 回流状态落库（阶段 5）：更新 is_indexed / index_status / last_index_version。
+     * last_index_version 用 COALESCE：传 null 时保留原值（软删/关闭回流时保留"曾回流"痕迹，
+     * 恢复时凭此判断是否重新入库）；传新值时覆盖。
+     */
+    public void updateIndexState(String noteId, int isIndexed, String indexStatus,
+                                 String lastIndexVersion) {
+        jdbc.update("""
+                UPDATE notes
+                   SET is_indexed = ?, index_status = ?,
+                       last_index_version = COALESCE(?, last_index_version), updated_at = ?
+                 WHERE note_id = ?
+                """, isIndexed, indexStatus, lastIndexVersion, nowIso(), noteId);
+    }
 
     /**
      * 编辑笔记：WHERE 带 editor_version 实现乐观锁，仅当版本匹配才更新并把版本 +1。

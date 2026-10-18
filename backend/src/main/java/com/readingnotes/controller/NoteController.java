@@ -10,6 +10,7 @@ import com.readingnotes.repository.NoteRepository;
 import com.readingnotes.repository.TagRepository;
 import com.readingnotes.service.NoteExportService;
 import com.readingnotes.service.NoteFromAiService;
+import com.readingnotes.service.NoteIndexService;
 import com.readingnotes.service.NoteLinkService;
 import com.readingnotes.service.NoteService;
 import com.readingnotes.service.TagService;
@@ -59,12 +60,14 @@ public class NoteController {
     private final NoteLinkRepository noteLinkRepository;
     private final NoteExportService noteExportService;
     private final NoteFromAiService noteFromAiService;
+    private final NoteIndexService noteIndexService;
 
     public NoteController(NoteService noteService, NoteRepository noteRepository,
                           TagService tagService, TagRepository tagRepository,
                           NoteLinkService noteLinkService, NoteLinkRepository noteLinkRepository,
                           NoteExportService noteExportService,
-                          NoteFromAiService noteFromAiService) {
+                          NoteFromAiService noteFromAiService,
+                          NoteIndexService noteIndexService) {
         this.noteService = noteService;
         this.noteRepository = noteRepository;
         this.tagService = tagService;
@@ -73,6 +76,7 @@ public class NoteController {
         this.noteLinkRepository = noteLinkRepository;
         this.noteExportService = noteExportService;
         this.noteFromAiService = noteFromAiService;
+        this.noteIndexService = noteIndexService;
     }
 
     // ==================== 9.1 新建笔记 ====================
@@ -311,6 +315,35 @@ public class NoteController {
             }
         }
         return ids;
+    }
+
+    // ==================== 9.8 知识回流开关 ====================
+
+    /**
+     * 请求体：{ enable: boolean }（必填）
+     * enable=true 开启回流（切片→Embedding→notes_all 入库）；false 关闭（删向量）。
+     * 失败时开关弹回（is_indexed=0、INDEX_FAILED），返回 50003 提示重试。
+     */
+    @PostMapping("/{noteId}/index")
+    public Result<Map<String, Object>> toggleIndex(@PathVariable String noteId,
+                                                   @RequestBody Map<String, Object> body) {
+        Object enableRaw = body.get("enable");
+        if (!(enableRaw instanceof Boolean b)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "enable 必须为布尔值");
+        }
+        NoteIndexService.IndexResult r = b ? noteIndexService.index(noteId)
+                : unindexResult(noteId);
+        Map<String, Object> data = new HashMap<>();
+        data.put("note_id", r.noteId());
+        data.put("is_indexed", r.isIndexed());
+        data.put("index_status", r.indexStatus());
+        data.put("indexed_chunk_count", r.indexedChunkCount());
+        return Result.ok(data);
+    }
+
+    private NoteIndexService.IndexResult unindexResult(String noteId) {
+        noteIndexService.unindex(noteId);
+        return new NoteIndexService.IndexResult(noteId, false, "NOT_INDEXED", 0);
     }
 
     // ==================== 9.10 双向链接 ====================
