@@ -524,7 +524,19 @@ async function save() {
     }
     drawerVisible.value = false
     await Promise.all([reload(), loadTags()])
-  } catch { /* 拦截器已提示（含 50004 版本冲突） */ } finally {
+  } catch (e) {
+    // 50004 乐观锁冲突：拦截器已提示，这里补"重新加载最新版本"入口
+    if (e?.response?.data?.code === 50004 && !isNew.value) {
+      try {
+        await ElMessageBox.confirm('笔记已被他人更新，是否重新加载最新版本？你未保存的修改会被覆盖', '版本冲突', {
+          type: 'warning',
+          confirmButtonText: '重新加载',
+          cancelButtonText: '保留我的修改'
+        })
+        await openDetail(currentId.value)
+      } catch { /* 用户选择保留本地修改 */ }
+    }
+  } finally {
     saving.value = false
   }
 }

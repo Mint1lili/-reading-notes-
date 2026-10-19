@@ -46,13 +46,13 @@ export const getNoteLinks = (noteId) => http.get(`/notes/${noteId}/links`)
 /** 创建双向链接；同对幂等 */
 export const createNoteLink = (noteId, payload) => http.post(`/notes/${noteId}/links`, payload)
 
-/** 知识回流开关（API §9.8；后端待实现，预留） */
+/** 知识回流开关（API §9.8；enable=true 入库 Chroma，false 关闭并软删向量） */
 export const toggleNoteIndex = (noteId, enable) => http.post(`/notes/${noteId}/index`, { enable })
 
-/** AI 产物一键存为笔记（API §9.9；后端待实现，预留） */
+/** AI 产物一键存为笔记（API §9.9；source_type=AI，来源书必须真实存在） */
 export const createNoteFromAi = (payload) => http.post('/notes/from-ai', payload)
 
-/** 导出笔记（API §9.11；后端待实现，预留） */
+/** 导出笔记（API §9.11；scope=selected/book，format=markdown/pdf） */
 export const exportNotes = (payload) => http.post('/notes/export', payload)
 
 // ===== 标签（F4 第二阶段） =====
