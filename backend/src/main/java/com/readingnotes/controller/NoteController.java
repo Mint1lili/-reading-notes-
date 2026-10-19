@@ -115,23 +115,29 @@ public class NoteController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String tag,
             @RequestParam(required = false) String indexed,
+            @RequestParam(defaultValue = "false") boolean soft_delete,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize) {
         Boolean indexedFlag = parseIndexed(indexed);
         List<Note> notes = noteService.list(book_id, source_type, keyword, tag,
-                indexedFlag, page, pageSize);
-        // 批量查标签与链接数，避免列表逐行 N+1 查询
+                indexedFlag, soft_delete, page, pageSize);
+        // 批量查标签、链接数、来源书标题，避免列表逐行 N+1 查询
         Map<String, List<Tag>> tagsMap = tagRepository.findByNoteIds(
                 notes.stream().map(Note::getNoteId).toList());
         Map<String, Integer> linkCountMap = noteLinkRepository.countLinksByNoteIds(
                 notes.stream().map(Note::getNoteId).toList());
+        Map<String, String> bookTitles = noteRepository.sourceBookTitles(
+                notes.stream().map(Note::getSourceBookId)
+                        .filter(java.util.Objects::nonNull).toList());
         List<Map<String, Object>> items = new ArrayList<>();
         for (Note n : notes) {
             items.add(toListItem(n, tagsMap.getOrDefault(n.getNoteId(), List.of()),
-                    linkCountMap.getOrDefault(n.getNoteId(), 0)));
+                    linkCountMap.getOrDefault(n.getNoteId(), 0),
+                    bookTitles.get(n.getSourceBookId())));
         }
         Map<String, Object> data = new HashMap<>();
-        data.put("total", noteService.count(book_id, source_type, keyword, tag, indexedFlag));
+        data.put("total", noteService.count(book_id, source_type, keyword, tag,
+                indexedFlag, soft_delete));
         data.put("page", page);
         data.put("page_size", pageSize);
         data.put("items", items);
@@ -139,13 +145,13 @@ public class NoteController {
     }
 
     /** 列表项：正文只给 200 字预览；tags 为真实标签；link_count 为出链+入链总数 */
-    private Map<String, Object> toListItem(Note n, List<Tag> tags, int linkCount) {
+    private Map<String, Object> toListItem(Note n, List<Tag> tags, int linkCount, String bookTitle) {
         Map<String, Object> item = new HashMap<>();
         item.put("note_id", n.getNoteId());
         item.put("title", n.getTitle());
         item.put("content_preview", preview(n.getContent(), 200));
         item.put("source_type", n.getSourceType());
-        item.put("source_book_title", noteRepository.sourceBookTitle(n.getSourceBookId()));
+        item.put("source_book_title", bookTitle);
         item.put("source_page", n.getSourcePage());
         item.put("tags", tags);
         item.put("is_indexed", n.getIsIndexed() != null && n.getIsIndexed() == 1);
@@ -154,6 +160,7 @@ public class NoteController {
         item.put("link_count", linkCount);              // 阶段 3：出链+入链总数
         item.put("created_at", n.getCreatedAt());
         item.put("updated_at", n.getUpdatedAt());
+        item.put("deleted_at", n.getDeletedAt());       // 回收站视图显示删除时间（soft_delete=true 时才有）
         return item;
     }
 

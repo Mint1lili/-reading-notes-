@@ -114,9 +114,11 @@ public class NoteRepository {
      * @param indexed      按回流状态过滤（可空：true=已回流 is_indexed=1，false=未回流）
      */
     public List<Note> list(String sourceBookId, String sourceType, String keyword,
-                           String tagName, Boolean indexed, int page, int pageSize) {
-        StringBuilder sql = new StringBuilder("SELECT * FROM notes WHERE soft_delete = 0");
+                           String tagName, Boolean indexed, boolean softDeleted,
+                           int page, int pageSize) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM notes WHERE soft_delete = ?");
         java.util.List<Object> args = new java.util.ArrayList<>();
+        args.add(softDeleted ? 1 : 0);
         if (sourceBookId != null && !sourceBookId.isBlank()) {
             sql.append(" AND source_book_id = ?");
             args.add(sourceBookId);
@@ -147,9 +149,10 @@ public class NoteRepository {
 
     /** 计数（与 list 同一套过滤条件，供分页返回 total） */
     public long count(String sourceBookId, String sourceType, String keyword,
-                      String tagName, Boolean indexed) {
-        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM notes WHERE soft_delete = 0");
+                      String tagName, Boolean indexed, boolean softDeleted) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM notes WHERE soft_delete = ?");
         java.util.List<Object> args = new java.util.ArrayList<>();
+        args.add(softDeleted ? 1 : 0);
         if (sourceBookId != null && !sourceBookId.isBlank()) {
             sql.append(" AND source_book_id = ?");
             args.add(sourceBookId);
@@ -214,6 +217,23 @@ public class NoteRepository {
                 "SELECT title FROM books WHERE book_id = ? AND soft_delete = 0",
                 (rs, i) -> rs.getString(1), bookId);
         return titles.isEmpty() ? null : titles.get(0);
+    }
+
+    /**
+     * 批量来源书标题（列表响应用，避免 N+1；bookId → title，书不存在/已删/空入参无条目）
+     * 保留单个 IN 查询；空集合直接返回空 Map，不拼非法 SQL。
+     */
+    public java.util.Map<String, String> sourceBookTitles(java.util.Collection<String> bookIds) {
+        java.util.Map<String, String> map = new java.util.HashMap<>();
+        if (bookIds == null || bookIds.isEmpty()) {
+            return map;
+        }
+        String in = String.join(",", java.util.Collections.nCopies(bookIds.size(), "?"));
+        jdbc.query("SELECT book_id, title FROM books WHERE book_id IN (" + in + ") AND soft_delete = 0",
+                rs -> {
+                    map.put(rs.getString(1), rs.getString(2));
+                }, bookIds.toArray());
+        return map;
     }
 
     // ==================== 编辑（乐观锁） ====================

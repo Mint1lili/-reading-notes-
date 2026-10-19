@@ -21,10 +21,10 @@
         <el-option label="未回流" value="false" />
       </el-select>
       <span class="spacer" />
-      <el-button :disabled="!selectedIds.length && !filters.bookId" @click="openExport">
+      <el-button :disabled="view === 'trash' || (!selectedIds.length && !filters.bookId)" @click="openExport">
         导出{{ selectedIds.length ? ` (${selectedIds.length})` : '' }}
       </el-button>
-      <el-button type="primary" @click="openCreate">+ 新建笔记</el-button>
+      <el-button type="primary" :disabled="view === 'trash'" @click="openCreate">+ 新建笔记</el-button>
     </div>
 
     <!-- 导出对话框（§9.11：markdown / pdf，选中 / 整本书） -->
@@ -72,6 +72,9 @@
         <div class="side-item" :class="{ active: view === 'notIndexed' }" @click="setView('notIndexed')">
           <span><i class="dot off" />未回流</span>
         </div>
+        <div class="side-item" :class="{ active: view === 'trash' }" @click="setView('trash')">
+          <span>🗑 回收站</span><span class="count">{{ trashTotal }}</span>
+        </div>
 
         <div class="side-title">标签</div>
         <div
@@ -100,10 +103,11 @@
             v-for="n in notes"
             :key="n.note_id"
             class="note-card"
-            :class="{ picked: selectedIds.includes(n.note_id) }"
-            @click="openDetail(n.note_id)"
+            :class="{ picked: selectedIds.includes(n.note_id), trash: view === 'trash' }"
+            @click="view !== 'trash' && openDetail(n.note_id)"
           >
             <el-checkbox
+              v-if="view !== 'trash'"
               class="pick"
               :model-value="selectedIds.includes(n.note_id)"
               @click.stop
@@ -124,17 +128,29 @@
             </div>
 
             <div class="card-foot">
-              <span class="status" :class="n.is_indexed ? 'on' : 'off'">
-                <i class="dot" />{{ n.is_indexed ? '已回流' : '未回流' }}
-              </span>
-              <span>{{ n.word_count }} 字</span>
-              <span v-if="n.link_count">🔗 {{ n.link_count }}</span>
-              <span class="time">{{ fmtDate(n.updated_at) }}</span>
+              <template v-if="view !== 'trash'">
+                <span class="status" :class="n.is_indexed ? 'on' : 'off'">
+                  <i class="dot" />{{ n.is_indexed ? '已回流' : '未回流' }}
+                </span>
+                <span>{{ n.word_count }} 字</span>
+                <span v-if="n.link_count">🔗 {{ n.link_count }}</span>
+                <span class="time">{{ fmtDate(n.updated_at) }}</span>
+              </template>
+              <template v-else>
+                <span class="time trash-time">🗑 删除于 {{ fmtDate(n.deleted_at) }}</span>
+                <span class="trash-actions" @click.stop>
+                  <el-button size="small" type="primary" plain @click="restoreNoteConfirm(n.note_id)">恢复</el-button>
+                  <el-button size="small" type="danger" plain @click="purgeCardNote(n.note_id)">永久删除</el-button>
+                </span>
+              </template>
             </div>
           </div>
         </div>
 
-        <el-empty v-if="!loading && !notes.length" description="还没有笔记，点右上角「新建笔记」写一条" />
+        <el-empty
+          v-if="!loading && !notes.length"
+          :description="view === 'trash' ? '回收站是空的，删除的笔记会出现在这里' : '还没有笔记，点右上角「新建笔记」写一条'"
+        />
 
         <el-pagination
           v-if="total > 0"
@@ -281,6 +297,7 @@ const notes = ref([])
 const tags = ref([])
 const books = ref([])
 const total = ref(0)
+const trashTotal = ref(0)
 const page = ref(1)
 const pageSize = ref(12)
 const loading = ref(false)
@@ -315,6 +332,7 @@ const buildParams = () => ({
   keyword: keyword.value || undefined,
   indexed: view.value === 'all' ? (filters.indexed || undefined)
     : (view.value === 'indexed' ? 'true' : 'false'),
+  soft_delete: view.value === 'trash',   // 回收站视图只查已软删笔记
   page: page.value,
   page_size: pageSize.value
 })
@@ -325,11 +343,22 @@ async function reload() {
     const data = await listNotes(buildParams())
     notes.value = data.items || []
     total.value = data.total || 0
+    if (view.value === 'trash') {
+      trashTotal.value = data.total || 0
+      selectedIds.value = []             // 回收站不可选中导出
+    }
   } catch {
     notes.value = []
   } finally {
     loading.value = false
   }
+}
+
+async function loadTrashCount() {
+  try {
+    const data = await listNotes({ soft_delete: true, page: 1, page_size: 1 })
+    trashTotal.value = data.total || 0
+  } catch { /* 忽略 */ }
 }
 
 async function loadTags() {
@@ -526,6 +555,36 @@ async function purgeNoteConfirm() {
     ElMessage.success('已永久删除')
     drawerVisible.value = false
     reload()
+    loadTrashCount()
+  } catch { /* 已提示 */ }
+}
+
+// ==================== 回收站（soft_delete=true 视图） ====================
+
+async function restoreNoteConfirm(noteId) {
+  try {
+    await ElMessageBox.confirm('恢复后笔记将回到正常列表（曾回流的会自动重新入库）', '恢复笔记', { type: 'info' })
+  } catch { return }
+  try {
+    await restoreNote(noteId)
+    ElMessage.success('已恢复')
+    reload()
+    loadTrashCount()
+  } catch { /* 已提示 */ }
+}
+
+async function purgeCardNote(noteId) {
+  try {
+    await ElMessageBox.confirm('永久删除不可恢复，且会置灰关联笔记的链接，确定？', '危险操作', {
+      type: 'error',
+      confirmButtonText: '永久删除'
+    })
+  } catch { return }
+  try {
+    await purgeNote(noteId)
+    ElMessage.success('已永久删除')
+    reload()
+    loadTrashCount()
   } catch { /* 已提示 */ }
 }
 
@@ -587,6 +646,7 @@ onMounted(() => {
   reload()
   loadTags()
   loadBooks()
+  loadTrashCount()
 })
 </script>
 
@@ -625,6 +685,10 @@ onMounted(() => {
 }
 .note-card:hover { box-shadow: 0 4px 14px rgba(20, 83, 45, 0.10); border-color: #b7d8c4; }
 .note-card.picked { border-color: #14532d; background: #f6fbf8; }
+.note-card.trash { background: #fafafa; opacity: .92; cursor: default; }
+.note-card.trash:hover { box-shadow: none; border-color: #ebeef5; }
+.trash-time { color: #909399; }
+.trash-actions { margin-left: auto; display: flex; gap: 6px; }
 .pick { position: absolute; top: 10px; right: 10px; }
 .card-title { font-weight: 600; font-size: 15px; color: #1f2937; margin: 0 26px 7px 0; line-height: 1.4; }
 .card-preview {
@@ -635,6 +699,7 @@ onMounted(() => {
 .card-source { font-size: 12px; color: #14532d; background: #f2f8f4; padding: 3px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
 .card-foot { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #909399; border-top: 1px dashed #ebeef5; padding-top: 7px; }
 .card-foot .time { margin-left: auto; }
+.card-foot .trash-time { margin-left: 0; }
 .status { display: flex; align-items: center; }
 .status.on { color: #67c23a; }
 .status.off { color: #c0c4cc; }

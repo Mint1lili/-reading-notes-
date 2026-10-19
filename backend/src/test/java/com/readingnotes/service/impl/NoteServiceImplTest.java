@@ -16,6 +16,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -106,6 +107,21 @@ class NoteServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).getCode())
                 .isEqualTo(ErrorCode.PARAM_ERROR.getCode());
+    }
+
+    @Test
+    @DisplayName("创建失败：来源书不存在抛 10001（外键友好提示，不落库）")
+    void create_sourceBookMissing_rejected() {
+        Note input = new Note();
+        input.setContent("一条带书归属的笔记");
+        input.setSourceBookId("book_not_exist");
+        when(noteRepository.sourceBookExists("book_not_exist")).thenReturn(false);
+
+        assertThatThrownBy(() -> noteService.create(input))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getCode())
+                .isEqualTo(ErrorCode.PARAM_ERROR.getCode());
+        verify(noteRepository, never()).insert(any());
     }
 
     // ==================== 编辑（乐观锁 + 回流三步事务） ====================
@@ -201,6 +217,19 @@ class NoteServiceImplTest {
     }
 
     @Test
+    @DisplayName("编辑失败：repo 返回 null（不存在或已软删）抛 50001，不触向量同步")
+    void update_repoReturnsNull_noteNotFound() {
+        when(noteRepository.findById("note_x")).thenReturn(null);
+
+        assertThatThrownBy(() -> noteService.update("note_x", "新标题", "新内容", 1))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getCode())
+                .isEqualTo(ErrorCode.NOTE_NOT_FOUND.getCode());
+        verify(noteIndexService, never()).syncAfterEdit(any(), any(), any());
+        verify(noteRepository, never()).updateContent(any(), any(), any(), anyInt(), anyInt());
+    }
+
+    @Test
     @DisplayName("编辑失败：正文为空抛 10001")
     void update_blankContent_rejected() {
         assertThatThrownBy(() -> noteService.update("note_1", "标题", "  ", 1))
@@ -245,6 +274,19 @@ class NoteServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).getCode())
                 .isEqualTo(ErrorCode.NOTE_NOT_FOUND.getCode());
+    }
+
+    @Test
+    @DisplayName("软删除失败：repo 返回 null（不存在或已软删）抛 50001，不触向量同步")
+    void delete_repoReturnsNull_noteNotFound() {
+        when(noteRepository.findById("note_x")).thenReturn(null);
+
+        assertThatThrownBy(() -> noteService.delete("note_x"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getCode())
+                .isEqualTo(ErrorCode.NOTE_NOT_FOUND.getCode());
+        verify(noteIndexService, never()).syncAfterDelete(any());
+        verify(noteRepository, never()).softDelete(any());
     }
 
     @Test
@@ -350,15 +392,15 @@ class NoteServiceImplTest {
     @Test
     @DisplayName("列表：页码/页大小越界时兜底到 1~100")
     void list_safePaging() {
-        // 签名含 indexed 过滤参数（阶段 2 新增）：bookId, sourceType, keyword, tagName, indexed, page, pageSize
-        when(noteRepository.list(any(), any(), any(), any(), any(), anyInt(), anyInt()))
+        // 签名：bookId, sourceType, keyword, tagName, indexed, softDeleted, page, pageSize
+        when(noteRepository.list(any(), any(), any(), any(), any(), anyBoolean(), anyInt(), anyInt()))
                 .thenReturn(java.util.List.of());
 
-        noteService.list(null, null, null, null, null, 0, 999);
-        noteService.list(null, null, null, null, null, -5, 0);
+        noteService.list(null, null, null, null, null, false, 0, 999);
+        noteService.list(null, null, null, null, null, false, -5, 0);
 
-        verify(noteRepository).list(eq(null), eq(null), eq(null), eq(null), eq(null), eq(1), eq(100));
-        verify(noteRepository).list(eq(null), eq(null), eq(null), eq(null), eq(null), eq(1), eq(1));
+        verify(noteRepository).list(eq(null), eq(null), eq(null), eq(null), eq(null), eq(false), eq(1), eq(100));
+        verify(noteRepository).list(eq(null), eq(null), eq(null), eq(null), eq(null), eq(false), eq(1), eq(1));
     }
 
     @Test

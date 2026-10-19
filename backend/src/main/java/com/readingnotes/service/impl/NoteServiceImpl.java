@@ -49,6 +49,12 @@ public class NoteServiceImpl implements NoteService {
         // 来源类型缺省 MANUAL（手动笔记）；AI 来源由阶段 5 回流接口写入
         String sourceType = (note.getSourceType() == null || note.getSourceType().isBlank())
                 ? "MANUAL" : note.getSourceType();
+        // 外键友好校验：source_book_id 指向不存在的书 → MySQL 外键异常会变 500，
+        // 这里提前给明确 10001（与 from-ai 链路一致：归属书必须真实存在）
+        if (note.getSourceBookId() != null && !note.getSourceBookId().isBlank()
+                && !noteRepository.sourceBookExists(note.getSourceBookId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "来源书不存在，无法绑定");
+        }
 
         String now = NoteRepository.nowIso();
         Note n = new Note();
@@ -81,18 +87,20 @@ public class NoteServiceImpl implements NoteService {
 
     @Override
     public List<Note> list(String sourceBookId, String sourceType, String keyword,
-                           String tagName, Boolean indexed, int page, int pageSize) {
+                           String tagName, Boolean indexed, boolean softDeleted,
+                           int page, int pageSize) {
         // 分页参数兜底：页码 ≥1，页大小 1~100（与 BookServiceImpl 一致）
         int safePage = Math.max(page, 1);
         int safeSize = Math.min(Math.max(pageSize, 1), 100);
         return noteRepository.list(sourceBookId, sourceType, keyword, tagName,
-                indexed, safePage, safeSize);
+                indexed, softDeleted, safePage, safeSize);
     }
 
     @Override
     public long count(String sourceBookId, String sourceType, String keyword,
-                      String tagName, Boolean indexed) {
-        return noteRepository.count(sourceBookId, sourceType, keyword, tagName, indexed);
+                      String tagName, Boolean indexed, boolean softDeleted) {
+        return noteRepository.count(sourceBookId, sourceType, keyword, tagName,
+                indexed, softDeleted);
     }
 
     @Override
@@ -117,6 +125,10 @@ public class NoteServiceImpl implements NoteService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "笔记正文不能为空");
         }
         Note before = noteRepository.findById(noteId);
+        // 先查拦截：repo 查不到（不存在或已软删）返回 null，不能带着 null 走向量同步
+        if (before == null) {
+            throw new BusinessException(ErrorCode.NOTE_NOT_FOUND);
+        }
         // 回流笔记：Chroma 三步事务（失败抛 50002，DB 未动）
         noteIndexService.syncAfterEdit(before, title, content);
         int updated = noteRepository.updateContent(
@@ -146,6 +158,10 @@ public class NoteServiceImpl implements NoteService {
     @Transactional
     public void delete(String noteId) {
         Note before = noteRepository.findById(noteId);
+        // 先查拦截：不存在或已软删返回 null，避免 null 传入向量同步
+        if (before == null) {
+            throw new BusinessException(ErrorCode.NOTE_NOT_FOUND);
+        }
         noteIndexService.syncAfterDelete(before);
         int updated = noteRepository.softDelete(noteId);
         if (updated == 0) {

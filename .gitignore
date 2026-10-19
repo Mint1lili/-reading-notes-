@@ -7,6 +7,7 @@ target/
 # 运行时数据（SQLite / 上传 PDF / 日志 / 备份）
 data/
 backend/data/
+*.log
 
 # Chroma 本地向量库运行时数据（chroma run 生成的 sqlite/目录）
 backend/chroma/
