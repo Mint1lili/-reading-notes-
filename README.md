@@ -1,13 +1,13 @@
 # 智读 · 知识库驱动的个人阅读读书笔记智能分析系统
 
 > 百景大赛 · 开放创新赛道参赛项目（2026 东莞工业 AI 应用创新挑战）
-> 版本：脚手架 V0.1（基于需求分析 V2.2 / 数据库设计 V1.0 / API 文档 V1.0）
+> 版本：V1.0（阶段 1–6 已完成：CRUD / 标签 / 双向链接 / 知识回流 / Markdown+PDF 导出 / 回收站）
 
 ## 项目定位
 
 B/S 单用户本地部署：上传 PDF 电子书 → 构建私有 RAG 知识库 → 全书摘要 / 书本内问答（拒答兜底）/ 跨书问答 / 思维导图 → AI 产物一键沉淀为笔记 → 笔记回流参与检索（个人知识闭环）。
 
-**核心亮点**：三层 RAG 兜底架构（元数据过滤 → 向量召回 → Rerank → 阈值拒答）、笔记回流闭环、map-reduce 分层摘要、SQLite+Chroma 跨存储一致性、50 题内置评测一键回归。
+**核心亮点**：三层 RAG 兜底架构（元数据过滤 → 向量召回 → Rerank → 阈值拒答）、笔记回流闭环（笔记向量入库参与检索）、map-reduce 分层摘要、MySQL + Chroma 双存储一致性维护、50 题内置评测一键回归。
 
 ## 技术栈（需求 §10 硬约束）
 
@@ -28,10 +28,10 @@ reading-notes/
 │   └── src/main/
 │       ├── java/com/readingnotes/
 │       │   ├── common/       # Result / ErrorCode / BusinessException / 全局异常 / Trace
-│       │   ├── config/       # SQLite / Chroma / 豆包 / RAG / CORS / 异步 / trace 过滤器
+│       │   ├── config/       # MySQL / Chroma / 豆包 / RAG / CORS / 异步 / trace 过滤器
 │       │   ├── ai/           # DoubaoClient / ChromaClient / RagChunker / RagPipeline
-│       │   ├── controller/   # HealthController / BookController（示例闭环）
-│       │   ├── service/ repository/ entity/ dto/ vo/ task/   # 业务分层（按需扩展）
+│       │   ├── controller/   # Health / Book / Note / Tag / File 五个 Controller
+│       │   ├── service/ repository/ entity/ dto/ vo/ task/   # 业务分层（task：导出清理定时任务）
 │       │   └── ReadingNotesApplication.java
 │       └── resources/
 │           ├── application.yml
@@ -77,7 +77,7 @@ setx DOUBAO_API_KEY "你的火山引擎豆包 API Key"
 
 打开 `http://localhost:5173`，健康检查：`http://127.0.0.1:8080/api/v1/health`（显示 Chroma 与豆包 key 状态）。
 
-## 脚手架已实现 vs 待开发
+## 已实现 vs 待开发
 
 ### 已实现（可编译可运行）
 - 统一响应信封 / 错误码体系（API 文档 §2/§3）/ 全局异常（业务 400/参数 400/大文件 413/兜底 500）
@@ -87,17 +87,18 @@ setx DOUBAO_API_KEY "你的火山引擎豆包 API Key"
 - Chroma 客户端：集合创建/upsert/query（cosine + where 过滤）/delete/健康检查
 - 语义切片器（600 字 / 章节优先 / 1500 不切 / 3000 二次切 / 100 重叠）
 - RAG 流水线：查询理解（章节/页码正则）→ 向量召回 Top-10 → 阈值兜底拒答
-- 示例闭环：GET /books 列表 + GET /books/{id} 详情（前端 LibraryView 已接通）
-- 前端：路由 + 5 个页面骨架 + axios 封装
+- 书籍管理 F1：书列表/详情（LibraryView 已接通）
+- **笔记管理 F4（C 模块，已完整交付）**：CRUD（乐观锁 50004）/ 标签（自动建）/ 双向链接 / 软删回收站（soft_delete 过滤 + 恢复 / 永久删除）/ 知识回流三步事务（笔记向量入库参与检索）/ Markdown + PDF 导出（下载路由 + 过期清理定时任务）/ 前端 NotesView 全交互（搜索 / 筛选 / 标签树 / 回收站 / 双链 / 回流开关 / 导出）
+- 前端：路由 + 5 个页面骨架 + axios 封装（统一解包 + 错误提示）
 
-### 待开发（按需求文档，4 人分工建议）
+### 当前进度（4 人分工）
 
-| 负责人 | 模块 | 依据 |
+| 负责人 | 模块 | 进度 |
 |---|---|---|
-| A | F1 上传/删除事务/回收站 + F2 构建任务（PDFBox 解析→章节识别→切片→入库→断点续传） | 需求 3.2/3.3，接口 §5/§6 |
-| B | F3 AI 交互（摘要 map-reduce / 问答 SSE / 跨书 / 导图 / 反馈版本） | 需求 3.4，接口 §7 |
-| C | F4 笔记（CRUD/标签/双向链接/回流三步事务/导出） | 需求 3.5，接口 §9 |
-| D | F5 设置（模型/RAG 参数/Prompt 版本/用量/备份/日志）+ 评估 + 验收剧本 | 需求 3.6/4.7/§12，接口 §10/§11 |
+| A | F1 上传/删除事务/回收站 + F2 构建任务（PDFBox 解析→章节识别→切片→入库→断点续传） | 书基础 CRUD 已通；上传/构建/回收站按阶段推进中 |
+| B | F3 AI 交互（摘要 map-reduce / 问答 SSE / 跨书 / 导图 / 反馈版本） | 阶段 5–6 已交付并实测 |
+| C | F4 笔记（CRUD/标签/双向链接/回流三步事务/导出/回收站） | **已全部完成**（含 PDF 导出、回收站视图、N+1 优化、外键友好提示） |
+| D | F5 设置（模型/RAG 参数/Prompt 版本/用量/备份/日志）+ 评估 + 验收剧本 | 评估/剧本按阶段推进中 |
 
 ## 关键参数速查（附录 A）
 
