@@ -14,7 +14,7 @@ B/S 单用户本地部署：上传 PDF 电子书 → 构建私有 RAG 知识库 
 | 层 | 技术 |
 |---|---|
 | 后端 | SpringBoot 3.2（JDK 17）+ Spring JDBC + PDFBox + Java HttpClient |
-| 向量库 | Chroma Server 模式（`chroma run --port 8000`，1024 维 cosine） |
+| 向量库 | Chroma Server 模式（`chroma run --port 8000`，1024 维 cosine；**要求 1.x 版本，1.5.9 已实测**——后端按 1.x v2 API 寻址，0.5.x 旧版不兼容） |
 | 数据库 | MySQL 8.0+（InnoDB / utf8mb4） |
 | AI | 豆包大模型 API（火山引擎 Ark）：`Doubao-embedding-text-240715` + Chat 模型 |
 | 前端 | Vue 3 + Vite + Element Plus + Pinia + Vue Router |
