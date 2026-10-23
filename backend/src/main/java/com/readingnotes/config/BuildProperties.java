@@ -25,8 +25,20 @@ public class BuildProperties {
     private int chunkSizeMin = 200;
     private int chunkSizeMax = 1200;
 
-    /** Embedding 每批条数（F2.4） */
+    /** 单本 PDF 页数上限：超过直接拒绝，避免解析耗时不可控（F2.1） */
+    private int maxPages = 2000;
+
+    /** 分片上传单片大小（字节），默认 5MB（F1.1 断点续传） */
+    private long uploadChunkSize = 5L * 1024 * 1024;
+
+    /** 分片上传会话有效期（小时），超时清理临时分片 */
+    private int uploadSessionTtlHours = 24;
+
+    /** Embedding 每批条数（F2.4）。注意：这是「DB 批次」粒度，单次 HTTP 请求条数由 doubao.batch-size 控制 */
     private int embeddingBatchSize = 16;
+
+    /** 某批触发过 429 后，下一批之前的冷却时间（毫秒）：方舟配额恢复常需数十秒，主动降速比硬冲更稳 */
+    private long rateLimitCooldownMs = 2000;
 
     /** 章节识别率低于此值时提示"未识别到章节结构"（F2.3） */
     private double chapterRateWarnThreshold = 0.5;

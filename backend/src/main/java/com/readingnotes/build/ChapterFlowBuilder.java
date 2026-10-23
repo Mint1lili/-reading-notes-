@@ -6,7 +6,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 章节分段器：把「行列表 + 标题列表」组装成「章节/段落」结构，供切片器消费。
@@ -76,7 +78,7 @@ public class ChapterFlowBuilder {
      * @param recognized  章节识别结果
      * @param totalPages  PDF 总页数
      */
-    public Flow build(List<TextLine> lines, ChapterRecognizer.Recognized recognized, int totalPages) {
+    public synchronized Flow build(List<TextLine> lines, ChapterRecognizer.Recognized recognized, int totalPages) {
         Flow flow = new Flow();
         flow.setRecognizedRate(recognized.getRecognizedRate());
         flow.setBodyFontSize(recognized.getBodyFontSize());
@@ -89,7 +91,7 @@ public class ChapterFlowBuilder {
         }
 
         // 标题行下标 → 标题，用于快速判断"这一行是不是标题"
-        java.util.Map<Integer, ChapterRecognizer.Heading> headingAt = new java.util.HashMap<>();
+        Map<Integer, ChapterRecognizer.Heading> headingAt = new HashMap<>();
         for (ChapterRecognizer.Heading h : recognized.getHeadings()) {
             headingAt.put(h.getLineIndex(), h);
         }
@@ -197,6 +199,7 @@ public class ChapterFlowBuilder {
                 && Math.abs(next.getFontSize() - headingFont) <= 0.8f;
     }
 
+    /** 把缓冲区落成一个段落；去掉行首缩进（全角空格/换行），纯空段落直接丢弃 */
     private void flush(List<Section> out, StringBuilder buf, String path, String title, int level,
                        int startPage, int endPage, float font) {
         // 段落首行的缩进属于排版信息，入库前去掉，避免影响向量语义

@@ -6,11 +6,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 切片数据访问（chunks 表）
- * 原书切片由 F2 构建任务写入；回流笔记切片由 F4 写入，两者共用本表。
+ * 切片数据访问（chunks 表）。
+ * <p>
+ * 原书切片由 F2 构建任务写入，回流笔记切片由 F4 写入，两者共用本表；
+ * 本层所有 book 相关查询都显式带 {@code chunk_type = 'book'}，避免读到笔记切片。
  */
 @Slf4j
 @Repository
@@ -22,7 +27,7 @@ public class ChunkRepository {
         this.jdbc = jdbc;
     }
 
-    private static Integer getInt(java.sql.ResultSet rs, String col) throws java.sql.SQLException {
+    private static Integer getInt(ResultSet rs, String col) throws SQLException {
         int v = rs.getInt(col);
         return rs.wasNull() ? null : v;
     }
@@ -85,6 +90,20 @@ public class ChunkRepository {
                 """, bookId, batchId);
     }
 
+    /**
+     * 把整本书的切片重置为待向量化。
+     * <p>
+     * 用于「入库完整性校验失败」后的重试：只回退断点没有用——续跑逻辑会跳过所有
+     * 已标 DONE 的批次，于是每次都走到同一个不完整的集合。必须连状态一起重置，
+     * retry 才会真正重写（Chroma 侧 upsert 按 chunk_id 覆盖，不会产生重复向量）。
+     */
+    public void resetEmbeddingStatus(String bookId) {
+        jdbc.update("""
+                UPDATE chunks SET embedding_status = 'PENDING', vector_id = NULL
+                WHERE book_id = ? AND chunk_type = 'book'
+                """, bookId);
+    }
+
     /** 取某本书的切片（按 position 升序，用于批次续跑） */
     public List<Chunk> listByBook(String bookId) {
         return jdbc.query(
@@ -96,7 +115,7 @@ public class ChunkRepository {
     public List<Chunk> pageByBook(String bookId, String chapterPathPrefix, int page, int pageSize) {
         StringBuilder sql = new StringBuilder(
                 "SELECT * FROM chunks WHERE book_id = ? AND chunk_type = 'book'");
-        java.util.List<Object> args = new java.util.ArrayList<>();
+        List<Object> args = new ArrayList<>();
         args.add(bookId);
         if (chapterPathPrefix != null && !chapterPathPrefix.isBlank()) {
             sql.append(" AND chapter_path LIKE ?");
@@ -111,7 +130,7 @@ public class ChunkRepository {
     public long countByBook(String bookId, String chapterPathPrefix) {
         StringBuilder sql = new StringBuilder(
                 "SELECT COUNT(*) FROM chunks WHERE book_id = ? AND chunk_type = 'book'");
-        java.util.List<Object> args = new java.util.ArrayList<>();
+        List<Object> args = new ArrayList<>();
         args.add(bookId);
         if (chapterPathPrefix != null && !chapterPathPrefix.isBlank()) {
             sql.append(" AND chapter_path LIKE ?");

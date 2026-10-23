@@ -5,14 +5,20 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 /**
- * Chroma 向量库配置（application.yml 的 chroma.*）
+ * Chroma 向量库配置（application.yml 的 chroma.*）。
+ * <p>
+ * 单节点部署，一个书籍对应一个集合（命名 {@code book_{bookId}}）；
+ * 重建时删旧建新，因此集合名必须可由 bookId 反推。
  */
 @Data
 @Component
 @ConfigurationProperties(prefix = "chroma")
 public class ChromaProperties {
 
+    /** 服务地址；容器内需显式写 IPv4（127.0.0.1），写 localhost 可能被解析到 ::1 而连不上 */
     private String baseUrl;
+
+    /** 健康检查间隔（毫秒），用于 Chroma 停机时的快速失败与恢复探测 */
     private long healthCheckIntervalMs;
 
     /**

@@ -6,10 +6,18 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.List;
 
 /**
- * 构建进度数据访问（build_progress 表）—— 断点续传的核心
+ * 构建进度数据访问（build_progress 表）—— 断点续传的核心。
+ * <p>
+ * 断点语义有两套，混用会导致"跳过未完成批次"或"重复向量化"：
+ * <ul>
+ *   <li>{@link #markBatchCompleted} 用 {@code GREATEST} 只进不退，正常构建时推进</li>
+ *   <li>{@link #resetResumePoint} 直接设置，用于用户显式重试或指定 from_batch</li>
+ * </ul>
  */
 @Slf4j
 @Repository
@@ -21,12 +29,12 @@ public class BuildProgressRepository {
         this.jdbc = jdbc;
     }
 
-    private static Integer getInt(java.sql.ResultSet rs, String col) throws java.sql.SQLException {
+    private static Integer getInt(ResultSet rs, String col) throws SQLException {
         int v = rs.getInt(col);
         return rs.wasNull() ? null : v;
     }
 
-    private static Double getDouble(java.sql.ResultSet rs, String col) throws java.sql.SQLException {
+    private static Double getDouble(ResultSet rs, String col) throws SQLException {
         double v = rs.getDouble(col);
         return rs.wasNull() ? null : v;
     }
@@ -45,6 +53,7 @@ public class BuildProgressRepository {
         return p;
     };
 
+    /** 读断点，无记录返回 null（首次构建时由 {@link #start} 建档） */
     public BuildProgress findOrNull(String bookId) {
         List<BuildProgress> list = jdbc.query(
                 "SELECT * FROM build_progress WHERE book_id = ?", MAPPER, bookId);
@@ -106,6 +115,7 @@ public class BuildProgressRepository {
                 """, Math.max(0, fromBatch), now, bookId);
     }
 
+    /** 删除本书构建记录（删除书籍/清理僵尸任务时调用） */
     public void deleteByBook(String bookId) {
         jdbc.update("DELETE FROM build_progress WHERE book_id = ?", bookId);
     }

@@ -23,7 +23,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 知识库构建查询/控制实现（F2.5 进度与断点续传）
+ * 知识库构建的查询与控制实现（F2，API 文档 §6）。
+ * <p>
+ * 本类不执行构建，只负责：读状态并拼装视图、校验状态机、把任务丢给
+ * {@link BuildTaskService}。状态是否允许某操作是这里唯一的业务判断点：
+ * 重试只接受 FAILED/CANCELLED，取消只接受 BUILDING/REBUILDING，其余一律按错误码拒绝。
  */
 @Slf4j
 @Service
@@ -54,6 +58,13 @@ public class BuildServiceImpl implements BuildService {
     // 6.1 构建状态
     // =========================================================================
 
+    /**
+     * 构建状态（前端 1~2s 轮询的数据源）。
+     * <p>
+     * 断点相关字段取 build_progress，书籍基本信息取 books；两者可能不一致（断点记录还没落库），
+     * 因此识别率优先用 books 上的最终值，缺失时才回退到 progress。
+     * {@code warnings} 是给前端的黄色提示条，不阻塞任何操作。
+     */
     @Override
     public Map<String, Object> status(String bookId) {
         Book book = bookRepo.findById(bookId);
@@ -99,6 +110,12 @@ public class BuildServiceImpl implements BuildService {
     // 6.2 重试
     // =========================================================================
 
+    /**
+     * 重试构建（断点续传）。
+     * <p>
+     * 三种情形：worker 还在跑 → 409 拒绝；没有批次规划（切片都没跑完）→ 从头构建；
+     * 有规划 → 可选地从 fromBatch 回退断点后继续，已完成的批次不会重跑。
+     */
     @Override
     public Map<String, Object> retry(String bookId, Integer fromBatch) {
         Book book = bookRepo.findActive(bookId);
@@ -146,6 +163,12 @@ public class BuildServiceImpl implements BuildService {
     // 6.3 取消
     // =========================================================================
 
+    /**
+     * 取消构建。
+     * <p>
+     * 只置取消标记并改写状态，worker 在下一个批次边界退出；已完成的批次与断点保留，
+     * 用户可随时 retry 继续。状态不是构建中时直接拒绝，避免把 READY 误改成 CANCELLED。
+     */
     @Override
     public Map<String, Object> cancel(String bookId) {
         Book book = bookRepo.findActive(bookId);
@@ -164,6 +187,12 @@ public class BuildServiceImpl implements BuildService {
     // 6.4 切片预览
     // =========================================================================
 
+    /**
+     * 切片预览（分页）。
+     *
+     * @param chapter 章节路径前缀过滤；空则返回全书
+     * @return total/page/page_size/items，items 按 position 升序
+     */
     @Override
     public Map<String, Object> chunks(String bookId, int page, int pageSize, String chapter) {
         Book book = bookRepo.findActive(bookId);
@@ -201,6 +230,12 @@ public class BuildServiceImpl implements BuildService {
     // 6.5 章节结构
     // =========================================================================
 
+    /**
+     * 章节结构。
+     * <p>
+     * 返回扁平列表（按 text_offset 排序），层级由 chapter_path 的编号深度表达，
+     * 前端自行按前缀重建树；{@code structure_recognized=false} 时前端应隐藏目录侧栏。
+     */
     @Override
     public Map<String, Object> chapters(String bookId) {
         Book book = bookRepo.findActive(bookId);
@@ -230,6 +265,11 @@ public class BuildServiceImpl implements BuildService {
     // 构建前预览统计（F2.3：切片数 / 字数分布 / 章节识别率）
     // =========================================================================
 
+    /**
+     * 已落库切片的实测统计（构建完成后回看用，区别于 BuildPreviewService 的内存试算）。
+     *
+     * @param book 已查询到的书籍实体，避免重复查库
+     */
     @Override
     public Map<String, Object> previewStats(Book book) {
         String bookId = book.getBookId();
@@ -262,6 +302,7 @@ public class BuildServiceImpl implements BuildService {
         return data;
     }
 
+    /** 解析 failed_batches_json（如 "[3,7]"）；脏数据逐项跳过，不因一格坏数据整体报错 */
     private List<Integer> parseFailedBatches(String json) {
         List<Integer> out = new ArrayList<>();
         if (json == null || json.isBlank()) {

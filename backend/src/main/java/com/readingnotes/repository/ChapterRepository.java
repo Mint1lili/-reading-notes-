@@ -6,10 +6,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.List;
 
 /**
- * 章节数据访问（chapters 表）
+ * 章节数据访问（chapters 表）。
+ * <p>
+ * 章节以扁平列表存储，查询按 {@code text_offset} 升序返回，调用方据此还原阅读顺序；
+ * 重建时先 {@link #deleteByBook} 再批量写入，不做增量比对。
  */
 @Slf4j
 @Repository
@@ -21,7 +26,8 @@ public class ChapterRepository {
         this.jdbc = jdbc;
     }
 
-    private static Integer getInt(java.sql.ResultSet rs, String col) throws java.sql.SQLException {
+    /** 可空整数列的安全读取：getInt 返回 0 无法区分 NULL，需配合 wasNull */
+    private static Integer getInt(ResultSet rs, String col) throws SQLException {
         int v = rs.getInt(col);
         return rs.wasNull() ? null : v;
     }
@@ -57,11 +63,13 @@ public class ChapterRepository {
                 """, args);
     }
 
+    /** 按阅读顺序取本书全部章节 */
     public List<Chapter> listByBook(String bookId) {
         return jdbc.query(
                 "SELECT * FROM chapters WHERE book_id = ? ORDER BY text_offset ASC", MAPPER, bookId);
     }
 
+    /** 删除本书全部章节（重建/删除书籍前调用） */
     public void deleteByBook(String bookId) {
         jdbc.update("DELETE FROM chapters WHERE book_id = ?", bookId);
     }

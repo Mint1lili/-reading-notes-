@@ -1,3 +1,11 @@
+<!--
+  书库管理（F1 + F2 的构建视图）。
+  一块页面承担三件事：
+    1. 书籍列表：分页、关键词/状态筛选、回收站切换；
+    2. 上传：≤10MB 走一次性上传，>10MB 走分片续传，重名走二次确认；
+    3. 详情抽屉：构建进度轮询、章节树、切片预览、重建（带内存试算）。
+  构建中的书通过 schedulePoll 每 2s 自刷新，全部就绪后自动停止轮询。
+-->
 <template>
   <div class="library">
     <!-- ==================== 顶部工具条 ==================== -->
@@ -341,6 +349,19 @@
         <el-radio-button label="medium">中 · 600 字</el-radio-button>
         <el-radio-button label="fine">细 · 300 字</el-radio-button>
       </el-radio-group>
+      <div class="preview-stat">
+        <template v-if="previewLoading">正在试算，不消耗 Embedding 额度…</template>
+        <template v-else-if="previewStat">
+          预计 <b>{{ previewStat.chunk_count }}</b> 片 · 中位片长
+          <b>{{ previewStat.chunk_stats.p50 }}</b> 字 · 章节覆盖
+          <b>{{ Math.round((previewStat.chapter?.coverage || 0) * 100) }}%</b>
+          · 约 {{ previewStat.total_batches }} 批<template v-if="previewStat.cached_parse">（解析已缓存）</template>
+          <div v-if="previewStat.warnings?.length" class="warn">
+            {{ previewStat.warnings[0] }}
+          </div>
+        </template>
+        <template v-else>暂时无法试算（原书文件缺失时只能直接重建）</template>
+      </div>
       <p class="muted small">
         粗粒度片数少、召回范围大；细粒度定位准但片数多、检索噪声也大。默认用「中」。
       </p>
@@ -353,7 +374,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   cancelBuild,
@@ -368,7 +389,9 @@ import {
   rebuildBook,
   restoreBook,
   retryBuild,
-  uploadBook
+  uploadBook,
+  uploadBookResumable,
+  getBuildPreview
 } from '../api'
 
 // ---------------------------------------------------------------------------
@@ -425,7 +448,7 @@ const acting = ref(false)
 let pollTimer = null
 
 // ---------------------------------------------------------------------------
-// 展示映射
+// 展示映射：后端枚举 → 中文文案 / el-tag 颜色
 // ---------------------------------------------------------------------------
 const STATUS_LABEL = {
   UPLOADING: '上传中',
@@ -451,6 +474,7 @@ const statusLabel = (s) => STATUS_LABEL[s] || s || '—'
 const stageLabel = (s) => (s ? STAGE_LABEL[s] || s : '—')
 const isBuilding = (s) => s === 'BUILDING' || s === 'REBUILDING' || s === 'UPLOADING'
 
+/** 状态 → el-tag 类型：只有 READY 是绿色、FAILED 是红色，其余统一灰色/橙色 */
 const statusType = (s) => {
   if (s === 'READY') return 'success'
   if (s === 'BUILDING' || s === 'REBUILDING' || s === 'UPLOADING') return 'warning'
@@ -458,6 +482,7 @@ const statusType = (s) => {
   return 'info'
 }
 
+/** 后端时间统一是 ISO-8601 UTC，这里转本地时区的 yyyy-MM-dd HH:mm */
 const fmtTime = (s) => {
   if (!s) return '—'
   const d = new Date(s)
@@ -466,12 +491,14 @@ const fmtTime = (s) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/** 文件大小展示：<1MB 用 KB，否则一位小数的 MB */
 const fmtSize = (n) => {
   if (!n) return '—'
   if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB'
   return (n / 1024 / 1024).toFixed(1) + ' MB'
 }
 
+/** 回收站剩余保留时间：<24h 显示小时，否则显示"X 天 Y 小时" */
 const remainText = (h) => {
   if (h == null) return '—'
   if (h <= 0) return '即将清理'
@@ -479,7 +506,12 @@ const remainText = (h) => {
   return `${Math.floor(h / 24)} 天 ${h % 24} 小时`
 }
 
-// 章节扁平列表 → el-tree 要求的嵌套结构（按 chapter_path 的层级）
+/**
+ * 章节扁平列表 → el-tree 的嵌套结构。
+ * <p>
+ * 后端只给 level 与 chapter_path，不带 parent_id；这里用栈按 level 还原父子关系：
+ * 遇到不大于栈顶的层级就先弹栈，剩下的栈顶即为父节点。O(n) 且不需要预处理 path。
+ */
 const chapterTree = computed(() => {
   const roots = []
   const stack = []
@@ -500,6 +532,10 @@ const chapterTree = computed(() => {
 // ---------------------------------------------------------------------------
 // 数据加载
 // ---------------------------------------------------------------------------
+/**
+ * 加载当前列表：回收站模式与正常列表走不同接口，字段结构一致。
+ * 无论成功失败都在 finally 里重新排一次轮询，保证构建中的书不会漏刷。
+ */
 async function load () {
   loading.value = true
   try {
@@ -526,11 +562,13 @@ async function load () {
   }
 }
 
+/** 重置到第一页再查（搜索、切状态、切回收站时用） */
 const reload = () => {
   page.value = 1
   load()
 }
 
+/** 回收站开关：页码归 1，避免在旧页码上查到空页 */
 const onTrashToggle = () => {
   page.value = 1
   load()
@@ -550,8 +588,13 @@ function schedulePoll () {
 // ---------------------------------------------------------------------------
 // 上传
 // ---------------------------------------------------------------------------
+/** 打开系统文件选择框；重置 input.value 由 onFilePicked 负责 */
 const pickFile = () => fileInput.value?.click()
 
+/**
+ * 选中文件后的前置校验：扩展名、50MB 上限，并对 >10MB 的文件提前告知耗时。
+ * 校验通过直接进入上传流程。
+ */
 function onFilePicked (e) {
   const file = e.target.files?.[0]
   e.target.value = '' // 允许重复选同一个文件
@@ -572,6 +615,17 @@ function onFilePicked (e) {
   doUpload(file, false)
 }
 
+/**
+ * 执行上传。
+ * <p>
+ * 进度条只表示"上传"这一段（0~70%），上传完成后直接跳到 100% 并提示"解析入库"——
+ * 后端构建是异步的，真实进度由列表轮询反映，不在这里假装推进。
+ * 重名（20003）时弹确认，用户同意后以 confirmDuplicate=true 重跑本函数；
+ * 分片模式下后端会保留会话，重跑只补缺失片。
+ *
+ * @param {File} file
+ * @param {boolean} confirmDuplicate 是否已确认"同名仍上传"
+ */
 async function doUpload (file, confirmDuplicate) {
   uploading.value = true
   uploadName.value = file.name
@@ -579,8 +633,11 @@ async function doUpload (file, confirmDuplicate) {
   uploadPhase.value = '上传中'
   try {
     const meta = confirmDuplicate ? { confirm_duplicate: true } : {}
-    const data = await uploadBook(file, meta, (p) => {
+    // >10MB 走分片续传：断网/刷新后只补缺失片，不用从头再传
+    const uploader = file.size > 10 * 1024 * 1024 ? uploadBookResumable : uploadBook
+    const data = await uploader(file, meta, (p) => {
       // 上传段占 0~70%，剩下的 70~100% 表示"后端已接收，正在解析入队"
+      uploadPhase.value = file.size > 10 * 1024 * 1024 ? '分片上传（可断线续传）' : '上传中'
       uploadPercent.value = Math.round(p * 0.7)
     })
     uploadPercent.value = 100
@@ -613,6 +670,7 @@ async function doUpload (file, confirmDuplicate) {
 // ---------------------------------------------------------------------------
 // 详情
 // ---------------------------------------------------------------------------
+/** 打开详情抽屉：先清空上一本的状态，避免闪现旧数据 */
 async function openDetail (row) {
   drawer.value = true
   tab.value = 'build'
@@ -627,6 +685,10 @@ async function openDetail (row) {
   await refreshDetail(row.book_id)
 }
 
+/**
+ * 刷新详情：详情与构建状态并行请求，任一失败都不影响另一个（各自 catch 成 null）。
+ * 只有确实有切片时才拉章节与切片列表，省掉构建初期的空请求。
+ */
 async function refreshDetail (bookId) {
   try {
     const [detail, st] = await Promise.all([
@@ -646,6 +708,7 @@ async function refreshDetail (bookId) {
   }
 }
 
+/** 加载切片分页；失败时清空列表而不是保留上一次的旧切片 */
 async function loadChunks () {
   if (!current.value) return
   chunkLoading.value = true
@@ -665,6 +728,7 @@ async function loadChunks () {
   }
 }
 
+/** 点章节树节点：按该章节前缀过滤切片，并切到切片页签 */
 function onChapterClick (node) {
   chunkChapterFilter.value = node.chapter_path
   chunkPage.value = 1
@@ -672,6 +736,7 @@ function onChapterClick (node) {
   loadChunks()
 }
 
+/** 清除章节过滤，回到全书切片 */
 function clearChapterFilter () {
   chunkChapterFilter.value = ''
   chunkPage.value = 1
@@ -679,14 +744,16 @@ function clearChapterFilter () {
 }
 
 // ---------------------------------------------------------------------------
-// 操作
+// 操作：删除 / 恢复 / 彻底删除 / 重试 / 取消 / 重建
 // ---------------------------------------------------------------------------
+/** 打开删除确认框；默认保留笔记（需求：删除书籍不删笔记） */
 function onDelete (row) {
   delTarget.value = row
   keepNotes.value = true
   delDialog.value = true
 }
 
+/** 确认软删除：进回收站，7 天内可恢复 */
 async function confirmDelete () {
   acting.value = true
   try {
@@ -701,6 +768,7 @@ async function confirmDelete () {
   }
 }
 
+/** 从回收站恢复：后端会按原文件是否还在，决定直接 READY 还是自动重建 */
 async function onRestore (row) {
   try {
     await restoreBook(row.book_id)
@@ -711,6 +779,7 @@ async function onRestore (row) {
   }
 }
 
+/** 彻底删除：不可恢复，用 error 类型的确认框强调风险 */
 async function onPurge (row) {
   try {
     await ElMessageBox.confirm(
@@ -730,6 +799,7 @@ async function onPurge (row) {
   }
 }
 
+/** 重试构建：不传 from_batch，由后端从断点续跑 */
 async function onRetry (row) {
   try {
     await retryBuild(row.book_id)
@@ -741,6 +811,7 @@ async function onRetry (row) {
   }
 }
 
+/** 取消构建：已完成的批次保留，之后仍可重试继续 */
 async function onCancel (row) {
   try {
     await cancelBuild(row.book_id)
@@ -752,18 +823,47 @@ async function onCancel (row) {
   }
 }
 
+/** 构建前试算结果（dry_run=true 才有值），仅用于重建弹窗里的预览数字 */
+const previewStat = ref(null)
+const previewLoading = ref(false)
+
+/** 按当前选中的粒度试算：不落库、不调 Embedding，切换粒度时自动刷新 */
+async function loadPreview () {
+  if (!rebuildTarget.value) return
+  previewLoading.value = true
+  previewStat.value = null
+  try {
+    const data = await getBuildPreview(rebuildTarget.value.book_id, { granularity: granularity.value })
+    if (data?.dry_run) previewStat.value = data
+  } catch {
+    previewStat.value = null
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+/** 粒度切换即重新试算：后端有解析缓存，切换是三档里最便宜的操作 */
+watch(granularity, () => { if (rebuildDialog.value) loadPreview() })
+
+/** 打开重建弹窗：默认中粒度并立即试算一次 */
 function onRebuild (row) {
   rebuildTarget.value = row
   granularity.value = 'medium'
   rebuildDialog.value = true
+  loadPreview()
 }
 
+/**
+ * 三档粒度对应的后端参数（与需求 F2.3 一致）。
+ * 注意 fine 的 overlap 是 60 而不是 100：片长只有 300，100 字重叠占比过高会重复召回。
+ */
 const REBUILD_PARAMS = {
   coarse: { chunk_size: 1000, overlap: 100 },
   medium: { chunk_size: 600, overlap: 100 },
-  fine: { chunk_size: 300, overlap: 50 }
+  fine: { chunk_size: 300, overlap: 60 }
 }
 
+/** 提交重建：重建是异步的，接口 202 返回后靠列表轮询看进度 */
 async function confirmRebuild () {
   acting.value = true
   try {
@@ -783,7 +883,7 @@ async function confirmRebuild () {
 }
 
 // ---------------------------------------------------------------------------
-// 生命周期
+// 生命周期：进入即加载；离开必须清掉轮询定时器，否则切页后仍在后台请求
 // ---------------------------------------------------------------------------
 onMounted(load)
 onBeforeUnmount(() => clearTimeout(pollTimer))
@@ -877,4 +977,13 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 .chunk-pager { margin-top: 6px; }
 
 .gran { margin: 12px 0; }
+.preview-stat {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, .1);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.preview-stat .warn { color: #f59e0b; margin-top: 4px; }
 </style>

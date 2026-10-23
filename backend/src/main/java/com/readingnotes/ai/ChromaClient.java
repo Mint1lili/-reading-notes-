@@ -2,11 +2,11 @@ package com.readingnotes.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.readingnotes.common.BusinessException;
 import com.readingnotes.common.ErrorCode;
 import com.readingnotes.config.ChromaProperties;
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -15,6 +15,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -86,6 +87,7 @@ public class ChromaClient {
         }
     }
 
+    /** 快速失败：调用任何写操作前先探活，避免把连接异常包装成难以定位的 500 */
     public void ensureHealthy() {
         if (!isHealthy()) {
             throw new BusinessException(ErrorCode.CHROMA_DOWN);
@@ -96,7 +98,11 @@ public class ChromaClient {
     public void createCollection(String name, int dim) {
         ensureHealthy();
         try {
-            // 先解析：v2 下若已存在可直接拿到 UUID 返回，同时把 id 填进缓存
+            // 先清掉本地缓存再解析：集合可能在向量库重启/清理/换实例后消失，
+            // 而缓存里还留着旧 UUID。若沿用缓存会直接 return，把一个"不存在的集合"
+            // 当成已就绪，随后 upsert 一路 404 —— 续跑重试永远补不齐。
+            // 该方法只在构建开始时调用一次，多一次 GET 的代价可以忽略。
+            collectionIds.remove(name);
             if (resolveCollectionId(name) != null) {
                 return;
             }
@@ -158,7 +164,21 @@ public class ChromaClient {
             // 集合被外部删除后重建，缓存的 UUID 会失效：失效重解析后重试一次
             if (resp.statusCode() == 404) {
                 collectionIds.remove(collection);
-                cid = resolveOrThrow(collection);
+                cid = resolveCollectionId(collection);
+                if (cid == null) {
+                    // 集合在构建过程中被删掉（向量库重启/人工清理）：按本批向量维度重建后重试，
+                    // 否则整本书只能停在 CHROMA_DOWN，重试也没有意义。
+                    int dim = embeddings.isEmpty() || embeddings.get(0) == null
+                            ? 0 : embeddings.get(0).size();
+                    if (dim > 0) {
+                        log.warn("collection {} vanished mid-build, recreating dim={}", collection, dim);
+                        createCollection(collection, dim);
+                        cid = resolveCollectionId(collection);
+                    }
+                }
+                if (cid == null) {
+                    throw new BusinessException(ErrorCode.CHROMA_DOWN);
+                }
                 resp = http.send(post(collectionsPath + "/" + cid + "/upsert", body), HttpResponse.BodyHandlers.ofString());
             }
             if (resp.statusCode() != 200) {
@@ -271,12 +291,58 @@ public class ChromaClient {
         }
     }
 
+    /**
+     * 集合内向量条数（构建完成后的完整性校验用，需求 F2.4）。
+     * <p>
+     * v2 与 v1 的 count 端点都支持按集合键寻址；集合不存在时返回 -1 而不是抛异常——
+     * 调用方据此区分"库挂了"（异常）与"集合被外部删了"（-1，应视为 0 条）。
+     */
+    public long count(String collection) {
+        ensureHealthy();
+        try {
+            String cid = resolveCollectionId(collection);
+            if (cid == null) {
+                return -1L;
+            }
+            HttpResponse<String> resp = http.send(
+                    HttpRequest.newBuilder()
+                            .uri(URI.create(props.getBaseUrl() + collectionsPath + "/" + cid + "/count"))
+                            .timeout(Duration.ofSeconds(10)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 404) {
+                collectionIds.remove(collection);
+                cid = resolveCollectionId(collection);
+                if (cid == null) {
+                    return -1L;
+                }
+                resp = http.send(
+                        HttpRequest.newBuilder()
+                                .uri(URI.create(props.getBaseUrl() + collectionsPath + "/" + cid + "/count"))
+                                .timeout(Duration.ofSeconds(10)).GET().build(),
+                        HttpResponse.BodyHandlers.ofString());
+            }
+            if (resp.statusCode() != 200) {
+                log.warn("count collection {} status={} body={}", collection, resp.statusCode(), resp.body());
+                return -1L;
+            }
+            String body = resp.body() == null ? "" : resp.body().trim().replace("\"", "");
+            return body.isEmpty() ? 0L : Long.parseLong(body);
+        } catch (NumberFormatException e) {
+            log.warn("count response not a number collection={}", collection);
+            return -1L;
+        } catch (Exception e) {
+            log.warn("count collection {} failed: {}", collection, e.toString());
+            return -1L;
+        }
+    }
+
+    /** 解析检索响应：ids/documents/metadatas/distances 均按查询分组，这里只取第 0 组 */
     private List<SearchHit> parseHits(JsonNode root) {
         JsonNode ids = root.path("ids").path(0);
         JsonNode docs = root.path("documents").path(0);
         JsonNode metas = root.path("metadatas").path(0);
         JsonNode dists = root.path("distances").path(0);
-        List<SearchHit> hits = new java.util.ArrayList<>();
+        List<SearchHit> hits = new ArrayList<>();
         for (int i = 0; i < ids.size(); i++) {
             SearchHit h = new SearchHit();
             h.setId(ids.get(i).asText());
@@ -356,12 +422,16 @@ public class ChromaClient {
         return seg.replace("/", "%2F");
     }
 
-    /** 检索命中记录 */
-    @lombok.Data
+    /** 检索命中记录：distance 为 cosine 距离（越小越相似），转相似度需 1-distance */
+    @Data
     public static class SearchHit {
+        /** 向量 id，等于 chunk_id */
         private String id;
+        /** 原始切片正文 */
         private String document;
+        /** 构建时写入的元数据：book_id / page / chapter_path 等 */
         private JsonNode metadata;
+        /** cosine 距离，0 表示完全一致 */
         private double distance;
     }
 }

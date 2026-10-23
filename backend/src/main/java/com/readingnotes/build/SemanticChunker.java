@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -139,6 +140,7 @@ public class SemanticChunker {
      *
      * @return 收片后的下一个 position
      */
+    /** 把缓冲区里的一批段落拼成若干切片（贪婪累加 + 尾部碎片合并），返回下一个 position */
     private int flushBuffer(String bookId, List<ChapterFlowBuilder.Section> buffer,
                             int position, List<Chunk> out,
                             int softTarget, int hardTarget, int ov, int batchSize) {
@@ -213,6 +215,7 @@ public class SemanticChunker {
         return position;
     }
 
+    /** 剩余段落的总字数（用于判断尾部是否过短） */
     private static int bufferCharsOf(List<ChapterFlowBuilder.Section> buffer, int from, int to) {
         int n = 0;
         for (int i = from; i < to; i++) {
@@ -314,6 +317,10 @@ public class SemanticChunker {
         return Math.min(endPage, Math.max(startPage, page));
     }
 
+    /**
+     * 组装一个切片实体：chunkId 由 bookId+position 派生，batchId 由 position/batchSize 派生。
+     * 两者都只依赖位置，因此重建时同位置的切片会得到相同 id，向量 upsert 天然幂等。
+     */
     private Chunk newChunk(String bookId, int position, ChapterFlowBuilder.Section para,
                            String content, int startPage, int endPage, int batchSize) {
         return Chunk.builder()
@@ -335,11 +342,12 @@ public class SemanticChunker {
      * 同一本书同一切片策略下结果稳定 → 断点续传/重试可覆盖旧向量；不同书不冲突。
      */
     public static String buildChunkId(String bookId, int position) {
-        String bookPart = UUID.nameUUIDFromBytes(("book:" + bookId).getBytes(java.nio.charset.StandardCharsets.UTF_8))
+        String bookPart = UUID.nameUUIDFromBytes(("book:" + bookId).getBytes(StandardCharsets.UTF_8))
                 .toString().replace("-", "").substring(0, 16);
         return bookPart + String.format("%016x", position);
     }
 
+    /** 数值夹紧到 [min, max]，用于把用户传入的 chunk_size/overlap 限制在安全范围 */
     private static int clamp(int v, int min, int max) {
         return Math.max(min, Math.min(max, v));
     }

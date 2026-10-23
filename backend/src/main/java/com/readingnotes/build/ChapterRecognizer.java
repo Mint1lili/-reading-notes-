@@ -321,6 +321,7 @@ public class ChapterRecognizer {
         return Math.min(1.0, (double) covered / total);
     }
 
+    /** 统计有效字符数（去空白），与 SemanticChunker 的口径保持一致 */
     private static int countChars(String s) {
         if (s == null) {
             return 0;
@@ -375,6 +376,12 @@ public class ChapterRecognizer {
         String number;
     }
 
+    /**
+     * 解析行首编号，识别"第X章/第X节/Chapter N/1.2.3/序言"等形态。
+     * <p>
+     * 匹配顺序即优先级：中文章 → 中文节 → 英文章 → 特殊章节。
+     * 返回 null 表示该行不是标题候选。
+     */
     private ParsedNumber parseNumber(String text) {
         Matcher m;
 
@@ -439,6 +446,7 @@ public class ChapterRecognizer {
         return null;
     }
 
+    /** 行尾是否为句末/停顿标点（用于区分"标题"与"正文句子"） */
     private static boolean endsWithSentencePunct(String text) {
         if (text.isEmpty()) {
             return false;

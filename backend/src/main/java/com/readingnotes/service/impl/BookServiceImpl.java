@@ -17,10 +17,10 @@ import com.readingnotes.service.BookService;
 import com.readingnotes.util.Ids;
 import com.readingnotes.util.Times;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -103,6 +103,7 @@ public class BookServiceImpl implements BookService {
     // 查询
     // =========================================================================
 
+    /** 查询列表；页码与页大小在此夹紧，防止上游传 0/负数造成 SQL 语法错误 */
     @Override
     public List<Book> list(String status, String keyword, int page, int pageSize) {
         int safePage = Math.max(page, 1);
@@ -110,11 +111,13 @@ public class BookServiceImpl implements BookService {
         return bookRepo.list(status, keyword, safePage, safeSize);
     }
 
+    /** 总数，与 {@link #list} 使用同一组过滤条件，保证分页器总数一致 */
     @Override
     public long count(String status, String keyword) {
         return bookRepo.count(status, keyword);
     }
 
+    /** 详情；不存在时抛 20005（由仓储层统一抛） */
     @Override
     public Book detail(String bookId) {
         return bookRepo.findById(bookId);
@@ -126,6 +129,7 @@ public class BookServiceImpl implements BookService {
         return bookRepo.countNotes(bookId);
     }
 
+    /** 批量取 note_count，列表页一次聚合，避免 N+1 */
     @Override
     public Map<String, Integer> noteCounts(List<String> bookIds) {
         return bookRepo.countNotesBatch(bookIds);
@@ -148,12 +152,94 @@ public class BookServiceImpl implements BookService {
             throw new BusinessException(ErrorCode.FILE_TOO_LARGE);
         }
 
-        // 书名：入参 > PDF 元数据 > 文件名（去扩展名）
-        String guessed = originalName.substring(0, originalName.length() - 4).trim();
-        String finalTitle = isBlank(title) ? guessed : title.trim();
-        finalTitle = UNSAFE_NAME.matcher(finalTitle).replaceAll("_");
+        // 先落到临时文件，再做魔数/解析校验：校验失败的半成品不会在 uploads/ 留下孤儿文件
+        Path tmpDir = Path.of(appProps.getUploadsDir()).toAbsolutePath().normalize().resolve(".tmp");
+        Path tmp = tmpDir.resolve("mp_" + System.nanoTime() + ".pdf");
+        try {
+            Files.createDirectories(tmpDir);
+            try (InputStream in = file.getInputStream()) {
+                Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
+            }
+            return registerBook(tmp, originalName, file.getSize(), title, author, confirmDuplicate);
+        } catch (IOException e) {
+            log.error("save upload temp failed", e);
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "文件保存失败，请检查磁盘空间");
+        } finally {
+            deleteQuietly(tmp);
+        }
+    }
+
+    /**
+     * 从已落盘的 PDF 文件登记一本书（单请求上传与分片上传共用）。
+     * <p>
+     * 顺序：魔数 → 解析探针（页数/字符数/元数据）→ 书名 → 重名确认 → 移入 uploads/ →
+     * 插库 → 触发构建。任何一步失败都不会留下书籍记录，临时文件由调用方清理。
+     *
+     * @param tempPdf       已合并完成的临时 PDF（本方法负责移走）
+     * @param originalName  原始文件名（仅用于取书名，不落盘）
+     * @param fileSize      声明大小，用于和实际字节数交叉校验
+     */
+    @Override
+    public Book registerBook(Path tempPdf, String originalName, long fileSize,
+                             String title, String author, boolean confirmDuplicate) {
+        if (tempPdf == null || !Files.isRegularFile(tempPdf)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "上传文件不存在，请重新上传");
+        }
+        long actualSize;
+        try {
+            actualSize = Files.size(tempPdf);
+        } catch (IOException e) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "读取上传文件失败");
+        }
+        if (actualSize <= 0) {
+            throw new BusinessException(ErrorCode.PDF_DAMAGED, "文件内容为空，请重新上传");
+        }
+        if (actualSize > MAX_FILE_SIZE) {
+            throw new BusinessException(ErrorCode.FILE_TOO_LARGE);
+        }
+        if (fileSize > 0 && fileSize != actualSize) {
+            log.warn("upload size mismatch declared={} actual={} file={}", fileSize, actualSize, originalName);
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件传输不完整，请重新上传");
+        }
+        // 魔数：光看扩展名挡不住把 .doc 改名成 .pdf 的情况，PDFBox 也只会在解析时报错
+        checkPdfMagic(tempPdf);
+
+        // 解析探针：页数 / 字符数 / PDF 元数据书名
+        int pages;
+        int chars;
+        String pdfTitle;
+        try {
+            PdfTextExtractor.ExtractResult probe = extractor.extract(tempPdf.toFile());
+            pages = probe.getTotalPages();
+            chars = probe.getCharCount();
+            pdfTitle = probe.getTitle();
+        } catch (PdfTextExtractor.EncryptedPdfException e) {
+            log.info("encrypted pdf rejected file={}", originalName);
+            throw new BusinessException(ErrorCode.PDF_ENCRYPTED);
+        } catch (IOException e) {
+            log.warn("pdf parse failed on upload file={}", originalName, e);
+            throw new BusinessException(ErrorCode.PDF_DAMAGED, "文件已损坏或不是有效的 PDF");
+        }
+        if (pages > buildProps.getMaxPages()) {
+            throw new BusinessException(ErrorCode.PDF_TOO_MANY_PAGES,
+                    "本书共 " + pages + " 页，超过 " + buildProps.getMaxPages() + " 页上限，暂不支持");
+        }
+        if (chars < PdfTextExtractor.MIN_CHARS) {
+            log.info("scanned pdf rejected file={} chars={}", originalName, chars);
+            throw new BusinessException(ErrorCode.SCANNED_PDF,
+                    "未检测到可复制文字，可能是扫描件。本期暂不支持扫描件，请使用文字版 PDF（可复制）");
+        }
+
+        // 书名优先级：用户填写 > PDF 元数据书名 > 文件名（去扩展名）
+        String guessed = originalName.toLowerCase(Locale.ROOT).endsWith(".pdf")
+                ? originalName.substring(0, originalName.length() - 4).trim() : originalName.trim();
+        String finalTitle = isBlank(title) ? (isBlank(pdfTitle) ? guessed : pdfTitle) : title.trim();
+        finalTitle = UNSAFE_NAME.matcher(finalTitle).replaceAll("_").trim();
         if (finalTitle.isEmpty()) {
             finalTitle = "未命名书籍";
+        }
+        if (finalTitle.length() > 80) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "书名不能超过 80 个字符");
         }
 
         // 重名确认（F1.1 边界 / 幂等策略 §14.2）
@@ -163,59 +249,43 @@ public class BookServiceImpl implements BookService {
         }
 
         String bookId = Ids.bookId();
-        // 重命名存储：uploads/{book_id}.pdf —— 彻底规避原始文件名带来的路径穿越
         Path uploadsDir = Path.of(appProps.getUploadsDir()).toAbsolutePath().normalize();
         Path target = uploadsDir.resolve(bookId + ".pdf").normalize();
-        if (!target.startsWith(uploadsDir)) {
+        if (!target.getParent().equals(uploadsDir)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "非法的存储路径");
         }
-
         try {
             Files.createDirectories(uploadsDir);
-            try (InputStream in = file.getInputStream()) {
-                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+            try {
+                Files.move(tempPdf, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException atomicFailed) {
+                // 跨盘/文件系统不支持原子移动时回退为普通移动
+                Files.move(tempPdf, target, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {
-            log.error("save upload failed bookId={}", bookId, e);
+            log.error("move upload failed bookId={}", bookId, e);
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, "文件保存失败，请检查磁盘空间");
-        }
-
-        // 扫描件 / 无文字层拦截（30001）——宁可在这里失败，也不要建完库才发现没内容
-        int pages;
-        int chars;
-        String pdfTitle = null;
-        try {
-            PdfTextExtractor.ExtractResult probe = extractor.extract(target.toFile());
-            pages = probe.getTotalPages();
-            chars = probe.getCharCount();
-            pdfTitle = probe.getTitle();
-        } catch (IOException e) {
-            deleteQuietly(target);
-            log.warn("pdf parse failed on upload bookId={} file={}", bookId, originalName, e);
-            throw new BusinessException(ErrorCode.BUILD_FAILED, "PDF 解析失败，文件可能已损坏或已加密");
-        }
-        if (chars < PdfTextExtractor.MIN_CHARS) {
-            deleteQuietly(target);
-            log.info("scanned pdf rejected bookId={} chars={}", bookId, chars);
-            throw new BusinessException(ErrorCode.SCANNED_PDF,
-                    "未检测到可复制文字，可能是扫描件。本期暂不支持扫描件，请使用文字版 PDF（可复制）");
         }
 
         String now = Times.now();
         Book book = new Book();
         book.setBookId(bookId);
-        // 书名优先级：用户填写 > PDF 元数据书名 > 文件名（F1.1：缺省从文件名/PDF 元数据提取）
-        book.setTitle(isBlank(title) ? (pdfTitle != null ? pdfTitle : finalTitle) : finalTitle);
+        book.setTitle(finalTitle);
         book.setAuthor(isBlank(author) ? null : author.trim());
         book.setFilePath("uploads/" + bookId + ".pdf");
-        book.setFileSize(file.getSize());
+        book.setFileSize(actualSize);
         book.setTotalPages(pages);
         book.setStatus("UPLOADING");
         book.setBuildProgress(0);
         book.setCreatedAt(now);
         book.setUpdatedAt(now);
         book.setSoftDelete(0);
-        bookRepo.insert(book);
+        try {
+            bookRepo.insert(book);
+        } catch (RuntimeException e) {
+            deleteQuietly(target);
+            throw e;
+        }
 
         // 置 BUILDING 并异步入队（响应不等待构建，需求 F1.1）
         bookRepo.updateStage(bookId, "BUILDING", "PARSE", 10, Times.now());
@@ -223,8 +293,24 @@ public class BookServiceImpl implements BookService {
         buildService.submit(bookId, null, null, false);
 
         log.info("upload accepted bookId={} title={} size={} pages={} chars={}",
-                bookId, book.getTitle(), file.getSize(), pages, chars);
+                bookId, finalTitle, actualSize, pages, chars);
         return bookRepo.findById(bookId);
+    }
+
+    /** 校验 PDF 魔数（前 5 字节 %PDF-），挡住改扩展名的非 PDF 文件 */
+    private void checkPdfMagic(Path pdf) {
+        byte[] head = new byte[5];
+        try (InputStream in = Files.newInputStream(pdf)) {
+            int read = in.readNBytes(head, 0, head.length);
+            if (read < head.length || head[0] != '%' || head[1] != 'P' || head[2] != 'D'
+                    || head[3] != 'F' || head[4] != '-') {
+                throw new BusinessException(ErrorCode.PDF_DAMAGED, "文件已损坏或不是有效的 PDF");
+            }
+        } catch (BusinessException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "读取文件失败，请重试");
+        }
     }
 
     // =========================================================================
@@ -287,10 +373,10 @@ public class BookServiceImpl implements BookService {
             // 2. 删除 Chroma 向量集合（404 视为已删，幂等）
             chroma.deleteCollection(collection);
 
-            // 3. 删除 PDF 文件（缺失视为已删）
-            Path pdf = Path.of(appProps.getUploadsDir()).resolve(bookIdSafe + ".pdf");
-            boolean fileDeleted = Files.deleteIfExists(pdf);
-            log.info("delete book bookId={} collection removed, pdfDeleted={}", bookIdSafe, fileDeleted);
+            // 3. 归档 PDF 到 uploads/.trash/（保留 7 天，恢复时移回）
+            //    不能直接物理删除：一删，「回收站 7 天内可恢复」就成了空话，恢复后只剩空壳记录。
+            boolean pdfArchived = archivePdf(bookIdSafe);
+            log.info("delete book bookId={} collection removed, pdfArchived={}", bookIdSafe, pdfArchived);
 
             // 4. 软删除记录 → 进回收站，purge_at = now + 7d
             String now = Times.now();
@@ -310,9 +396,9 @@ public class BookServiceImpl implements BookService {
             throw new BusinessException(e.getCode(), e.getHttpStatus(), "删除失败，可点击重试：" + e.getMessage());
         } catch (IOException e) {
             bookRepo.markFailed(bookIdSafe, String.valueOf(ErrorCode.INTERNAL_ERROR.getCode()),
-                    "删除 PDF 文件失败：" + e.getMessage() + "，可点击重试", Times.now());
-            log.error("delete pdf failed bookId={}", bookIdSafe, e);
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "删除 PDF 文件失败，可点击重试");
+                    "归档 PDF 文件失败：" + e.getMessage() + "，可点击重试", Times.now());
+            log.error("archive pdf failed bookId={}", bookIdSafe, e);
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "归档 PDF 文件失败，可点击重试");
         }
     }
 
@@ -324,6 +410,12 @@ public class BookServiceImpl implements BookService {
         return 0;
     }
 
+    /**
+     * 从回收站恢复。
+     * <p>
+     * 两条分支：原文件还在 → 回到 BUILDING 并自动重建（删除时向量已清空，不重建则问答不可用）；
+     * 原文件已丢失 → 恢复到 FAILED 并提示重新上传，至少保留书名与笔记关联。
+     */
     @Override
     public Book restore(String bookId) {
         Book book = bookRepo.findById(bookId);
@@ -335,26 +427,31 @@ public class BookServiceImpl implements BookService {
             throw new BusinessException(ErrorCode.BOOK_NOT_FOUND, "已超过保留期，书籍已被清理");
         }
 
-        Path pdf = Path.of(appProps.getUploadsDir()).resolve(bookId + ".pdf");
-        boolean hasFile = Files.isRegularFile(pdf) || Files.isRegularFile(pdf.toAbsolutePath());
+        // 把 .trash 里的归档文件移回 uploads/；移不回来说明归档已丢失
+        boolean hasFile = restoreArchivedPdf(bookId);
 
         if (hasFile) {
-            // 文件还在：直接恢复为 READY，向量是否还在由 Chroma 决定
-            // （删除时集合已清空，因此一律重建，保证恢复后问答可用）
+            // 向量集合在删除时已清空，因此恢复后一律重建，保证问答可用
             bookRepo.restore(bookId, "BUILDING", Times.now());
             progressRepo.deleteByBook(bookId);
             buildService.submit(bookId, null, null, true);
-            log.info("restore book bookId={} → rebuild (file exists)", bookId);
+            log.info("restore book bookId={} → rebuild (pdf restored from trash)", bookId);
         } else {
-            // 文件已删：只能恢复记录，需重新上传才能构建
+            // 归档也被清理（超过保留期或磁盘异常）：只能恢复记录，需重新上传
             bookRepo.restore(bookId, "FAILED", Times.now());
-            bookRepo.markFailed(bookId, String.valueOf(ErrorCode.BUILD_FAILED.getCode()),
-                    "恢复成功，但 PDF 文件已被清理，请重新上传本书", Times.now());
-            log.info("restore book bookId={} → FAILED (pdf missing)", bookId);
+            bookRepo.markFailed(bookId, String.valueOf(ErrorCode.FILE_NOT_FOUND_ON_DISK.getCode()),
+                    "恢复成功，但原书文件已丢失，请重新上传本书", Times.now());
+            log.info("restore book bookId={} → FAILED (archived pdf missing)", bookId);
         }
         return bookRepo.findById(bookId);
     }
 
+    /**
+     * 永久删除：清向量 → 清子表 → 清文件 → 硬删主记录。
+     * <p>
+     * 顺序不可调整：chunks/chapters/build_progress 均有外键指向 books，先删主记录会被 RESTRICT 拦住。
+     * 若仍有关联笔记导致硬删失败，回退为软删状态并提示用户先处理笔记，不静默吞掉。
+     */
     @Override
     public void purge(String bookId) {
         Book book = bookRepo.findById(bookId);
@@ -364,7 +461,7 @@ public class BookServiceImpl implements BookService {
         String collection = BuildTaskService.collectionName(bookId);
         log.info("purge book bookId={} title={}", bookId, book.getTitle());
 
-        // 顺序：清向量 → 清切片/章节/进度 → 清 PDF → 最后硬删主记录
+        // 顺序：清向量 → 清切片/章节/进度 → 清 PDF（含 .trash 归档）→ 最后硬删主记录
         // （chunks/chapters/build_progress 有外键指向 books，必须先删子表）
         try {
             chroma.deleteCollection(collection);
@@ -374,15 +471,13 @@ public class BookServiceImpl implements BookService {
         chunkRepo.deleteByBook(bookId);
         chapterRepo.deleteByBook(bookId);
         progressRepo.deleteByBook(bookId);
-        try {
-            Files.deleteIfExists(Path.of(appProps.getUploadsDir()).resolve(bookId + ".pdf"));
-        } catch (IOException e) {
-            log.warn("purge: pdf delete failed bookId={} {}", bookId, e.getMessage());
-        }
+        // 两处都要删：正常流程文件在 .trash，异常流程（删除中断在步 3）可能仍在 uploads/
+        deleteQuietly(pdfPath(bookId));
+        deleteQuietly(trashPath(bookId));
         bookRepo.markPurging(bookId, Times.now());
         try {
             bookRepo.hardDelete(bookId);
-        } catch (org.springframework.dao.DataAccessException e) {
+        } catch (DataAccessException e) {
             // 仍有关联笔记/用量记录指向本书（外键 RESTRICT）
             log.warn("purge blocked by references bookId={} {}", bookId, e.getMessage());
             throw new BusinessException(ErrorCode.PARAM_ERROR,
@@ -391,6 +486,7 @@ public class BookServiceImpl implements BookService {
         log.info("purge done bookId={}", bookId);
     }
 
+    /** 回收站列表：附剩余保留小时数，供前端倒计时 */
     @Override
     public List<Map<String, Object>> trash() {
         List<Book> books = bookRepo.listTrash();
@@ -455,6 +551,92 @@ public class BookServiceImpl implements BookService {
     // =========================================================================
     // 工具
     // =========================================================================
+
+    private Path pdfPath(String bookId) {
+        return Path.of(appProps.getUploadsDir()).toAbsolutePath().normalize().resolve(bookId + ".pdf");
+    }
+
+    /** 回收站归档路径：uploads/.trash/{book_id}.pdf */
+    private Path trashPath(String bookId) {
+        return Path.of(appProps.getUploadsDir()).toAbsolutePath().normalize()
+                .resolve(".trash").resolve(bookId + ".pdf");
+    }
+
+    /**
+     * 删除时把 PDF 移入 .trash（不物理删除）。
+     * 返回 false 表示源文件本来就不存在（幂等：重复删除不报错）。
+     */
+    private boolean archivePdf(String bookId) throws IOException {
+        Path src = pdfPath(bookId);
+        if (!Files.isRegularFile(src)) {
+            return false;
+        }
+        Path dst = trashPath(bookId);
+        Files.createDirectories(dst.getParent());
+        try {
+            Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException atomicFailed) {
+            Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING);
+        }
+        return true;
+    }
+
+    /**
+     * 恢复时把 PDF 从 .trash 移回 uploads/。
+     * 返回 false 表示归档已丢失（超过保留期被清理 / 磁盘异常）。
+     */
+    private boolean restoreArchivedPdf(String bookId) {
+        Path live = pdfPath(bookId);
+        if (Files.isRegularFile(live)) {
+            return true;   // 删除流程曾在第 3 步失败，文件还在原处
+        }
+        Path trashed = trashPath(bookId);
+        if (!Files.isRegularFile(trashed)) {
+            return false;
+        }
+        try {
+            Files.createDirectories(live.getParent());
+            try {
+                Files.move(trashed, live, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException atomicFailed) {
+                Files.move(trashed, live, StandardCopyOption.REPLACE_EXISTING);
+            }
+            return true;
+        } catch (IOException e) {
+            log.error("restore archived pdf failed bookId={}", bookId, e);
+            return false;
+        }
+    }
+
+    @Override
+    public Path resolvePdf(String bookId) {
+        Book book = bookRepo.findActive(bookId);
+        Path pdf = pdfPath(book.getBookId());
+        if (!Files.isRegularFile(pdf)) {
+            throw new BusinessException(ErrorCode.FILE_NOT_FOUND_ON_DISK);
+        }
+        return pdf;
+    }
+
+    @Override
+    public Map<String, Object> deletePreview(String bookId) {
+        Book book = bookRepo.findActive(bookId);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("book_id", book.getBookId());
+        data.put("title", book.getTitle());
+        data.put("file_size", book.getFileSize() == null ? 0 : book.getFileSize());
+        data.put("total_pages", book.getTotalPages());
+        data.put("chunk_count", book.getChunkCount() == null ? 0 : book.getChunkCount());
+        data.put("note_count", bookRepo.countNotes(book.getBookId()));
+        data.put("is_building", buildService.isRunning(book.getBookId())
+                || "BUILDING".equals(book.getStatus())
+                || "REBUILDING".equals(book.getStatus()));
+        data.put("retain_days", buildProps.getTrashRetainDays());
+        data.put("keep_notes_default", true);
+        data.put("message", "将删除该书的向量索引与 PDF 文件，关联笔记保留并标记「所属书已删除」；"
+                + "删除后 " + buildProps.getTrashRetainDays() + " 天内可在回收站恢复");
+        return data;
+    }
 
     private static boolean isBlank(String s) {
         return s == null || s.isBlank();

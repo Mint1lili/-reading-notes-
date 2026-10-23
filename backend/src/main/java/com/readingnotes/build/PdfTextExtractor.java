@@ -5,6 +5,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDDocumentInformation;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.pdfbox.text.TextPosition;
@@ -18,6 +20,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * PDF 文本提取器（需求 F2.1）。
@@ -49,7 +52,7 @@ public class PdfTextExtractor {
      * 真实书稿里因此出现"每页一个 13 位数字独立成段"的碎片，把平均片长从 700 字拉到 76 字。
      * 限定 9 位以上、且整行仅由数字与分隔符组成，避免误删"2024""3.14"这类正常数字。
      */
-    private static final java.util.regex.Pattern NOISE_LINE = java.util.regex.Pattern.compile(
+    private static final Pattern NOISE_LINE = Pattern.compile(
             "^[\\s\\-_—–./:：]*\\d{9,}[\\s\\-_—–./:：]*$");
 
     /**
@@ -106,6 +109,16 @@ public class PdfTextExtractor {
             log.info("pdf parsed file={} pages={} lines={} chars={}",
                     pdf.getName(), pages, cleaned.size(), result.getCharCount());
             return result;
+        } catch (InvalidPasswordException e) {
+            // 需要打开密码的 PDF：不能笼统报"文件已损坏"，否则用户不知道该解除密码
+            throw new EncryptedPdfException(pdf.getName());
+        }
+    }
+
+    /** PDF 需要打开密码（需求 F1.1 异常：加密文件给明确中文提示） */
+    public static class EncryptedPdfException extends IOException {
+        public EncryptedPdfException(String fileName) {
+            super("PDF 已加密，需要密码才能打开：" + fileName);
         }
     }
 
@@ -146,10 +159,12 @@ public class PdfTextExtractor {
         return out;
     }
 
+    /** 归一化：去掉全部空白，用于"跨页重复文本"的等值比较（排版差异导致空格数不同） */
     private static String normalize(String s) {
         return s == null ? "" : s.replaceAll("\\s+", "").trim();
     }
 
+    /** 清洗：连续空白压成一个空格，全空返回 null（便于调用方跳过空行） */
     private static String clean(String s) {
         if (s == null) {
             return null;
@@ -205,12 +220,19 @@ public class PdfTextExtractor {
             super();
         }
 
+        /** 记录页高，用于把 y 坐标换算成"页面上/下 12%"的位置带 */
         @Override
-        protected void startPage(org.apache.pdfbox.pdmodel.PDPage page) throws IOException {
+        protected void startPage(PDPage page) throws IOException {
             pageHeight = page.getMediaBox().getHeight();
             super.startPage(page);
         }
 
+        /**
+         * 每遇到一段文本回调一次：累加文本与字符数，同时统计加粗字符占比。
+         * <p>
+         * 一个"行"可能由多个 TextPosition 片段组成（混排字体），因此这里只累积，
+         * 真正落盘交给 {@link #writeLineSeparator()} / {@link #endPage}。
+         */
         @Override
         protected void writeString(String text, List<TextPosition> textPositions) {
             if (text == null || text.isBlank()) {
@@ -232,13 +254,15 @@ public class PdfTextExtractor {
             lineText.append(' ');
         }
 
+        /** PDFBox 在行结束时回调：把缓冲的一行落盘并清空状态 */
         @Override
         protected void writeLineSeparator() {
             flushLine();
         }
 
+        /** 分页时也要落盘：最后一行的行结束符可能缺失，否则会丢行 */
         @Override
-        protected void endPage(org.apache.pdfbox.pdmodel.PDPage page) {
+        protected void endPage(PDPage page) {
             flushLine();
         }
 

@@ -24,6 +24,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -68,9 +69,7 @@ public class BuildTaskService {
     private final ChapterRepository chapterRepo;
     private final ChunkRepository chunkRepo;
     private final BuildProgressRepository progressRepo;
-    private final PdfTextExtractor extractor;
-    private final ChapterRecognizer recognizer;
-    private final ChapterFlowBuilder flowBuilder;
+    private final BuildPreviewService previewService;
     private final SemanticChunker chunker;
     private final DoubaoClient doubao;
     private final ChromaClient chroma;
@@ -84,9 +83,7 @@ public class BuildTaskService {
                             ChapterRepository chapterRepo,
                             ChunkRepository chunkRepo,
                             BuildProgressRepository progressRepo,
-                            PdfTextExtractor extractor,
-                            ChapterRecognizer recognizer,
-                            ChapterFlowBuilder flowBuilder,
+                            BuildPreviewService previewService,
                             SemanticChunker chunker,
                             DoubaoClient doubao,
                             ChromaClient chroma,
@@ -99,9 +96,7 @@ public class BuildTaskService {
         this.chapterRepo = chapterRepo;
         this.chunkRepo = chunkRepo;
         this.progressRepo = progressRepo;
-        this.extractor = extractor;
-        this.recognizer = recognizer;
-        this.flowBuilder = flowBuilder;
+        this.previewService = previewService;
         this.chunker = chunker;
         this.doubao = doubao;
         this.chroma = chroma;
@@ -210,28 +205,22 @@ public class BuildTaskService {
                 return;
             }
 
-            // ---------- 1. 解析（10 → 20） ----------
-            PdfTextExtractor.ExtractResult extracted = extractor.extract(pdf);
-            if (extracted.isScanned()) {
-                log.info("scanned pdf detected bookId={} chars={}", bookId, extracted.getCharCount());
-                fail(bookId, ErrorCode.SCANNED_PDF, "未检测到可复制文字，可能是扫描件");
-                return;
-            }
+            // ---------- 1. 解析 + 章节识别（10 → 20） ----------
+            // 复用 BuildPreviewService 的解析缓存：用户先在预览页看过这本书的话，这里不再重复解析
+            BuildPreviewService.ParsedBook parsed = previewService.parse(bookId, pdf);
+            int totalPages = parsed.getTotalPages();
             if (checkCancelled(bookId)) {
                 bookRepo.markCancelled(bookId, Times.now());
                 return;
             }
             bookRepo.updateStage(bookId, currentStatus(rebuild), "RECOGNIZE", 20, Times.now());
-
-            // ---------- 2. 章节识别（20 → 30） ----------
-            ChapterRecognizer.Recognized recognized = recognizer.recognize(extracted.getLines());
             if (checkCancelled(bookId)) {
                 bookRepo.markCancelled(bookId, Times.now());
                 return;
             }
             bookRepo.updateStage(bookId, currentStatus(rebuild), "CHUNK", 30, Times.now());
 
-            // ---------- 3. 切片（30） ----------
+            // ---------- 2. 切片（30） ----------
             // 断点续传：切片已落库且批次规划一致 → 直接复用，不重新解析
             int size = chunkSize != null ? chunkSize : defaultChunkSize();
             int ov = overlap != null ? overlap : defaultOverlap();
@@ -239,7 +228,6 @@ public class BuildTaskService {
                     && snap.totalBatches != null && snap.planned != null
                     && snap.planned > 0 && chunkRepo.countByBook(bookId, null) == snap.planned;
 
-            ChapterFlowBuilder.Flow flow = null;
             double chapterRate;
             int plannedChunks;
             int totalBatches;
@@ -251,17 +239,42 @@ public class BuildTaskService {
                 log.info("resume build bookId={} reuse chunks planned={} totalBatches={} fromBatch={}",
                         bookId, plannedChunks, totalBatches, snap.lastCompletedBatch);
             } else {
-                flow = flowBuilder.build(extracted.getLines(), recognized, extracted.getTotalPages());
+                ChapterFlowBuilder.Flow flow = parsed.getFlow();
                 chapterRate = flow.getRecognizedRate();
                 // 章节率过低：记警告，构建继续（需求 F2.3 / 错误码 30003 是警告不是错误）
                 if (flow.isHasStructure() && chapterRate < buildProps.getChapterRateWarnThreshold()) {
                     log.warn("chapter rate too low bookId={} rate={} — fallback to pure vector search",
                             bookId, chapterRate);
                 }
-                persistChapters(bookId, flow, extracted.getTotalPages());
 
-                SemanticChunker.ChunkPlan plan =
-                        chunker.chunk(bookId, flow.getParagraphs(), size, ov);
+                // 切片超硬上限时不再静默截断（会丢正文），先自动调粗粒度高一级再试；
+                // 调到上限仍超 → 明确失败，让用户拆分上传，而不是交出一本"少了几章"的书。
+                SemanticChunker.ChunkPlan plan = chunker.chunk(bookId, flow.getParagraphs(), size, ov);
+                int adjusted = 0;
+                while (plan.isTruncated() && size < buildProps.getChunkSizeMax()) {
+                    int next = Math.min(buildProps.getChunkSizeMax(), (int) Math.round(size * 1.5));
+                    if (next == size) {
+                        break;
+                    }
+                    size = next;
+                    ov = Math.min(ov, size / 3);
+                    plan = chunker.chunk(bookId, flow.getParagraphs(), size, ov);
+                    adjusted++;
+                    log.warn("chunks exceeded hard limit, coarsen granularity bookId={} newSize={} attempt={}",
+                            bookId, size, adjusted);
+                }
+                if (plan.isTruncated()) {
+                    fail(bookId, ErrorCode.BUILD_FAILED,
+                            "本书篇幅过大，超过单本 " + buildProps.getChunkHardLimit()
+                                    + " 片上限。请拆分成多本上传，或联系管理员调高 build.chunk-hard-limit");
+                    return;
+                }
+                if (adjusted > 0) {
+                    log.info("chunk granularity auto-adjusted bookId={} from={} to={} attempts={}",
+                            bookId, chunkSize != null ? chunkSize : defaultChunkSize(), size, adjusted);
+                }
+
+                persistChapters(bookId, flow, totalPages);
                 persistChunks(bookId, plan);
                 plannedChunks = plan.getChunks().size();
                 totalBatches = plan.getTotalBatches();
@@ -269,7 +282,7 @@ public class BuildTaskService {
                     fail(bookId, ErrorCode.BUILD_FAILED, "切片结果为空，请检查 PDF 内容");
                     return;
                 }
-                if (plan.isTruncated() || plannedChunks > buildProps.getChunkSoftLimit()) {
+                if (plannedChunks > buildProps.getChunkSoftLimit()) {
                     // 软上限：不阻塞构建，只在预览页红色警告（需求 F2.2）
                     log.warn("chunks exceed soft limit bookId={} chunks={} softLimit={}",
                             bookId, plannedChunks, buildProps.getChunkSoftLimit());
@@ -295,25 +308,55 @@ public class BuildTaskService {
             if (!outcome.failedBatches.isEmpty()) {
                 progressRepo.saveFailedBatches(bookId, toJsonArray(outcome.failedBatches), Times.now());
                 String code = String.valueOf(ErrorCode.BUILD_FAILED.getCode());
-                if (outcome.lastError != null && outcome.lastError.getCode() == ErrorCode.EMBED_TIMEOUT.getCode()) {
-                    code = String.valueOf(ErrorCode.EMBED_TIMEOUT.getCode());
+                String message = "批次 " + outcome.failedBatches.size() + " 个失败（"
+                        + outcome.failedBatches + "），可点击重试续跑";
+                // 依赖类错误（key 无效 / 模型不存在 / 限流 / 维度不符 / Chroma 掉线）原样透出，
+                // 否则用户只看到"批次失败"，不知道该去改什么配置。
+                BusinessException last = outcome.lastError;
+                if (last != null && last.getCode() != ErrorCode.BUILD_FAILED.getCode()) {
+                    code = String.valueOf(last.getCode());
+                    message = last.getMessage() + "（失败批次 " + outcome.failedBatches.size()
+                            + " 个，修复后点击重试续跑）";
                 }
-                fail(bookId, code, "批次 " + outcome.failedBatches.size() + " 个失败（"
-                        + outcome.failedBatches + "），可点击重试续跑");
+                fail(bookId, code, message);
                 return;
             }
 
-            // ---------- 5. 收尾（100） ----------
+            // ---------- 5. 入库完整性校验 + 收尾（100） ----------
+            // Chroma 的 upsert 是逐批的，网络抖动/单批静默失败都可能让集合少几条；
+            // 不校验就置 READY，问答时表现为"某几章永远检索不到"，且无从定位。
+            long indexed = -1L;
+            try {
+                indexed = chroma.count(collectionName(bookId));
+            } catch (Exception e) {
+                log.warn("chroma count check skipped bookId={} {}", bookId, e.getMessage());
+            }
+            int expected = (int) chunkRepo.countByBook(bookId, null);
+            if (indexed >= 0 && expected > 0 && indexed < expected) {
+                log.error("ingest incomplete bookId={} expected={} actual={}", bookId, expected, indexed);
+                // 必须重置切片状态，否则重试会跳过所有 DONE 批次，永远补不齐
+                chunkRepo.resetEmbeddingStatus(bookId);
+                progressRepo.resetResumePoint(bookId, 0, Times.now());
+                fail(bookId, ErrorCode.BUILD_FAILED,
+                        "知识库写入不完整（应有 " + expected + " 片，实际 " + indexed
+                                + " 片），已保留切片，请点击重试补齐");
+                return;
+            }
+            if (indexed > expected && expected > 0) {
+                log.warn("chroma has more vectors than chunks bookId={} expected={} actual={}",
+                        bookId, expected, indexed);
+            }
+
             bookRepo.markReady(bookId, plannedChunks, chapterRate,
                     doubaoProps.getEmbeddingModel(), doubaoProps.getEmbeddingDim(),
-                    extracted.getTotalPages(), Times.now());
+                    totalPages, Times.now());
             log.info("==== build done bookId={} chunks={} batches={} elapsed={}ms ====",
                     bookId, plannedChunks, totalBatches, System.currentTimeMillis() - t0);
 
         } catch (BusinessException e) {
             log.warn("build business error bookId={} code={} msg={}", bookId, e.getCode(), e.getMessage());
             fail(bookId, String.valueOf(e.getCode()), e.getMessage());
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             log.error("build io error bookId={} trace={}", bookId, TraceContext.current(), e);
             fail(bookId, String.valueOf(ErrorCode.BUILD_FAILED.getCode()),
                     "PDF 解析失败，文件可能已损坏：" + e.getMessage());
@@ -382,9 +425,9 @@ public class BuildTaskService {
                 continue;
             }
 
+            boolean[] rateLimited = new boolean[1];
             try {
                 List<String> texts = batch.stream().map(Chunk::getContent).toList();
-                boolean[] rateLimited = new boolean[1];
                 List<List<Float>> vectors = doubao.embed(texts, rateLimited);
 
                 List<String> ids = batch.stream().map(Chunk::getChunkId).toList();
@@ -419,12 +462,31 @@ public class BuildTaskService {
                 chunkRepo.markBatchFailed(bookId, b);
                 out.failedBatches.add(b);
                 out.lastError = e;
-                // Chroma 整体不可用 / key 未配置 → 后续批次必然全失败，直接中止
-                if (e.getCode() == ErrorCode.CHROMA_DOWN.getCode()
-                        || e.getCode() == ErrorCode.DOUBAO_DOWN.getCode()
-                        || e.getCode() == 70003) {
-                    log.error("fatal dependency error, abort remaining batches bookId={}", bookId);
+                // Chroma 整体不可用 / key 无效 / 模型不存在 / 持续限流 / 维度不符 → 后续批次必然全失败，
+                // 直接中止并保留断点，用户修好配置后点「重试」即可从失败批次续跑。
+                if (isFatalDependencyError(e.getCode())) {
+                    log.error("fatal dependency error, abort remaining batches bookId={} code={}",
+                            bookId, e.getCode());
                     break;
+                }
+            }
+
+            // 本批触发过 429：主动冷却再继续，避免把剩余批次全部撞成失败
+            if (rateLimited[0]) {
+                if (checkCancelled(bookId)) {
+                    out.cancelled = true;
+                    return out;
+                }
+                long cooldown = Math.max(0, buildProps.getRateLimitCooldownMs());
+                if (cooldown > 0) {
+                    log.warn("上一批触发限流，冷却 {}ms 后继续 bookId={} batch={}", cooldown, bookId, b);
+                    try {
+                        Thread.sleep(cooldown);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        out.cancelled = true;
+                        return out;
+                    }
                 }
             }
         }
@@ -514,6 +576,7 @@ public class BuildTaskService {
     // 辅助
     // =========================================================================
 
+    /** 断点快照：能否续跑、总批次、计划切片数、已完成批次、章节识别率 */
     private static class BuildProgressSnapshot {
         boolean canResume;
         Integer totalBatches;
@@ -522,6 +585,12 @@ public class BuildTaskService {
         Double chapterRate;
     }
 
+    /**
+     * 读取断点；无记录则建一条空的起始记录。
+     * <p>
+     * 只有"已有批次规划且断点未跑完"才允许续跑：首次构建或已全部完成的，都应走完整流程，
+     * 否则会跳过切片阶段直接进 EMBED，导致 chunk 表为空。
+     */
     private BuildProgressSnapshot loadOrInitProgress(String bookId, String now) {
         BuildProgressSnapshot snap = new BuildProgressSnapshot();
         var p = progressRepo.findOrNull(bookId);
@@ -557,22 +626,51 @@ public class BuildTaskService {
         return "book_" + bookId;
     }
 
+    /**
+     * 是否已收到取消请求。
+     * <p>
+     * 用内存标记而不是查库：worker 在每个批次开头高频调用，查库会成为热点；
+     * 代价是重启后标记丢失，需依赖 build_progress 的状态判断兜底。
+     */
     private boolean checkCancelled(String bookId) {
         return cancelFlags.contains(bookId);
     }
 
+    /**
+     * 是否为「继续跑也没用」的依赖级错误：配置错误或下游整体不可用。
+     * 命中后中止剩余批次，保留断点等用户修复后重试。
+     */
+    private boolean isFatalDependencyError(int code) {
+        return code == ErrorCode.CHROMA_DOWN.getCode()
+                || code == ErrorCode.DIM_MISMATCH.getCode()
+                || code == ErrorCode.DOUBAO_DOWN.getCode()
+                || code == ErrorCode.DOUBAO_AUTH_FAILED.getCode()
+                || code == ErrorCode.DOUBAO_MODEL_NOT_FOUND.getCode()
+                || code == ErrorCode.DOUBAO_MODEL_NOT_OPEN.getCode()
+                || code == ErrorCode.DOUBAO_RATE_LIMITED.getCode();
+    }
+
+    /** 构建中的状态值：重建走 REBUILDING，首次构建走 BUILDING（前端据此区分文案） */
     private String currentStatus(boolean rebuild) {
         return rebuild ? "REBUILDING" : "BUILDING";
     }
 
+    /** 标记失败（错误码枚举重载） */
     private void fail(String bookId, ErrorCode code, String message) {
         fail(bookId, String.valueOf(code.getCode()), message);
     }
 
+    /** 标记失败：写 status=FAILED + error_code/error_message，供前端展示与重试判断 */
     private void fail(String bookId, String code, String message) {
         bookRepo.markFailed(bookId, code, message, Times.now());
     }
 
+    /**
+     * 标记失败但吞掉异常。
+     * <p>
+     * 用于 catch 块内：此时数据库可能也不可用，若再抛异常会覆盖原始错误，
+     * 让用户看到"标记失败失败"而不是真正的失败原因。
+     */
     private void failQuietly(String bookId, ErrorCode code, String message) {
         try {
             fail(bookId, code, message);
@@ -581,14 +679,17 @@ public class BuildTaskService {
         }
     }
 
+    /** 默认切片字数：未配置 rag.* 时回落到 600（与需求 F2.3 的中粒度一致） */
     private int defaultChunkSize() {
         return ragProps != null && ragProps.getChunkSize() > 0 ? ragProps.getChunkSize() : 600;
     }
 
+    /** 默认重叠字数：未配置时回落到 100 */
     private int defaultOverlap() {
         return ragProps != null && ragProps.getOverlap() >= 0 ? ragProps.getOverlap() : 100;
     }
 
+    /** 手写 JSON 数组（避免为一个字段引入序列化依赖），如 [3,7] */
     private static String toJsonArray(List<Integer> list) {
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < list.size(); i++) {

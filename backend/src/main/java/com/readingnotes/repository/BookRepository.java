@@ -12,11 +12,20 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * 书籍数据访问层（JdbcTemplate，MySQL 8）
- * 覆盖 F1 书籍管理所需的全部读写与状态机操作。
+ * 书籍数据访问层（JdbcTemplate，MySQL 8）。
+ * <p>
+ * 覆盖 F1 书籍管理所需的全部读写与状态机操作。约定：
+ * <ul>
+ *   <li>{@code list*} 查询默认排除软删（{@code soft_delete = 0}）</li>
+ *   <li>{@code findOrNull} 不抛异常，供状态机内部判断；{@code findById/findActive} 抛 20005，供接口层使用</li>
+ *   <li>所有时间参数由调用方以 ISO 字符串传入，本层不生成时间，便于测试注入</li>
+ * </ul>
  */
 @Slf4j
 @Repository
@@ -259,12 +268,12 @@ public class BookRepository {
     }
 
     /** 批量关联笔记数：一次 GROUP BY 聚合，避免列表页 N+1 查询 */
-    public java.util.Map<String, Integer> countNotesBatch(List<String> bookIds) {
-        java.util.Map<String, Integer> map = new java.util.HashMap<>();
+    public Map<String, Integer> countNotesBatch(List<String> bookIds) {
+        Map<String, Integer> map = new HashMap<>();
         if (bookIds == null || bookIds.isEmpty()) {
             return map;
         }
-        String in = String.join(",", java.util.Collections.nCopies(bookIds.size(), "?"));
+        String in = String.join(",", Collections.nCopies(bookIds.size(), "?"));
         jdbc.query("SELECT source_book_id, COUNT(*) c FROM notes "
                         + "WHERE soft_delete = 0 AND source_book_id IN (" + in + ") GROUP BY source_book_id",
                 rs -> {
@@ -279,12 +288,20 @@ public class BookRepository {
             return jdbc.query("SELECT book_id FROM books WHERE status = 'READY' AND soft_delete = 0",
                     (rs, i) -> rs.getString(1));
         }
-        String in = String.join(",", java.util.Collections.nCopies(bookIds.size(), "?"));
+        String in = String.join(",", Collections.nCopies(bookIds.size(), "?"));
         return jdbc.query("SELECT book_id FROM books WHERE status = 'READY' AND soft_delete = 0 AND book_id IN ("
                         + in + ")", (rs, i) -> rs.getString(1), bookIds.toArray());
     }
 
-    /** 计算进度区间内的百分比：向量化阶段 30%→90% 按批次线性推进 */
+    /**
+     * 计算向量化阶段的进度百分比：30% → 90% 按批次线性推进。
+     * <p>
+     * 30% 之前留给解析/章节识别/切片，90% 之后留给入库校验，进度条因此不会长时间停在 0 或 99。
+     *
+     * @param batchIndex   已完成批次数
+     * @param totalBatches 总批次数；为 0 时返回起点 30
+     * @return 30~90 之间的整数百分比
+     */
     public static int embedProgress(int batchIndex, int totalBatches) {
         if (totalBatches <= 0) {
             return 30;
@@ -293,6 +310,7 @@ public class BookRepository {
         return (int) Math.min(90, 30 + Math.floor(ratio * 60));
     }
 
+    /** 截断错误信息，避免超长堆栈写爆 VARCHAR(1000) 列 */
     private static String truncate(String s, int max) {
         if (s == null) {
             return null;
