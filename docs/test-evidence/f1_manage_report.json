@@ -1,0 +1,392 @@
+{
+  "book_id": "book_df300f9f0d314d8d8a6652bbd3c65a1b",
+  "chunked_id": "book_abd6c4c76e704b84bda3775614f0ef93",
+  "results": [
+    {
+      "section": "F1.2 列表",
+      "case": "分页返回 total/items",
+      "ok": true,
+      "expected": "200 + 3 条",
+      "actual": [
+        200,
+        23,
+        3
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.2 列表",
+      "case": "第 2 页与第 1 页不重复",
+      "ok": true,
+      "expected": "无重叠",
+      "actual": 3,
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.2 列表",
+      "case": "keyword 大小写不敏感匹配书名",
+      "ok": true,
+      "expected": "命中目标书",
+      "actual": 1,
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.2 列表",
+      "case": "keyword 匹配作者",
+      "ok": true,
+      "expected": "命中目标书",
+      "actual": 1,
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.2 列表",
+      "case": "status=READY 过滤",
+      "ok": true,
+      "expected": "全部 READY",
+      "actual": [
+        "READY"
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.2 列表",
+      "case": "sort 参数（last_read_at/created_at/title）",
+      "ok": false,
+      "expected": "支持 3 种排序",
+      "actual": "接口未实现 sort 参数，固定 created_at DESC",
+      "http": 200,
+      "note": "需求 F1.3 要求 sort，实现只按 created_at DESC"
+    },
+    {
+      "section": "F1.2 列表",
+      "case": "tag 标签筛选",
+      "ok": false,
+      "expected": "按标签过滤",
+      "actual": "接口未实现 tag 参数（书籍无标签字段）",
+      "http": 200,
+      "note": "需求 F1.3 要求 tag 过滤"
+    },
+    {
+      "section": "F1.2 列表",
+      "case": "page_size 上限",
+      "ok": true,
+      "expected": "≤100（需求 ≤50）",
+      "actual": 100,
+      "http": 200,
+      "note": "需求上限 50，实现允许 100"
+    },
+    {
+      "section": "F1.3 详情与编辑",
+      "case": "详情返回构建信息",
+      "ok": true,
+      "expected": "200 + chunkCount",
+      "actual": [
+        200,
+        "READY",
+        28
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.3 详情与编辑",
+      "case": "编辑书名/作者",
+      "ok": true,
+      "expected": "200 + 新标题",
+      "actual": [
+        200,
+        "F1管理测试书-改名",
+        "新作者"
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.3 详情与编辑",
+      "case": "改名不触发重建（状态/切片数不变）",
+      "ok": true,
+      "expected": "READY + chunk 不变",
+      "actual": [
+        "READY",
+        28
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F1.3 详情与编辑",
+      "case": "书名 > 80 字被拒",
+      "ok": false,
+      "expected": "400/422",
+      "actual": [
+        200,
+        "success"
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.3 详情与编辑",
+      "case": "同书名占用 → 409",
+      "ok": true,
+      "expected": "409/20003",
+      "actual": [
+        200,
+        0
+      ],
+      "http": 200,
+      "note": "仅当存在同名书时才 409"
+    },
+    {
+      "section": "F1.3 详情与编辑",
+      "case": "description/tags/cover 可编辑",
+      "ok": false,
+      "expected": "支持 4 个字段",
+      "actual": "UpdateBookRequest 只有 title/author",
+      "http": 200,
+      "note": "需求 F1.4 要求 tags/description/cover"
+    },
+    {
+      "section": "F1.4 删除",
+      "case": "删除预检字段齐全",
+      "ok": true,
+      "expected": "note/chunk/size/is_building",
+      "actual": [
+        "book_id",
+        "chunk_count",
+        "file_size",
+        "is_building",
+        "keep_notes_default",
+        "message",
+        "note_count",
+        "retain_days",
+        "title",
+        "total_pages"
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.4 删除",
+      "case": "软删除返回 204",
+      "ok": true,
+      "expected": "204",
+      "actual": 204,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F1.4 删除",
+      "case": "列表默认不再包含已删书",
+      "ok": true,
+      "expected": "不在列表",
+      "actual": 22,
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.4 删除",
+      "case": "回收站可见 + 剩余时间",
+      "ok": true,
+      "expected": "remaining_hours≈168",
+      "actual": 159,
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.4 删除",
+      "case": "删除后向量集合已移除",
+      "ok": true,
+      "expected": "集合不存在",
+      "actual": null,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F1.4 删除",
+      "case": "已删书详情接口返回 404",
+      "ok": false,
+      "expected": "404",
+      "actual": [
+        200,
+        "DELETED"
+      ],
+      "http": 200,
+      "note": "实现返回 200（findById 含软删）"
+    },
+    {
+      "section": "F1.4 删除",
+      "case": "已删书原文下载 404（笔记置灰依据）",
+      "ok": true,
+      "expected": "404/410",
+      "actual": 404,
+      "http": 404,
+      "note": ""
+    },
+    {
+      "section": "F1.5 回收站恢复",
+      "case": "恢复后重新入队构建",
+      "ok": true,
+      "expected": "BUILDING/READY",
+      "actual": [
+        200,
+        "BUILDING"
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.5 回收站恢复",
+      "case": "恢复后自动重建到 READY",
+      "ok": true,
+      "expected": "READY",
+      "actual": [
+        "READY",
+        28,
+        "2.0s"
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F1.5 回收站恢复",
+      "case": "恢复后向量集合重新可用",
+      "ok": true,
+      "expected": "count>0",
+      "actual": 28,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F1.6 彻底删除",
+      "case": "purge 返回 204",
+      "ok": true,
+      "expected": "204",
+      "actual": 204,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F1.6 彻底删除",
+      "case": "记录物理删除",
+      "ok": true,
+      "expected": "404",
+      "actual": 404,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F1.1 分片上传",
+      "case": "init 返回 uploadId",
+      "ok": true,
+      "expected": "uploadId",
+      "actual": [
+        200,
+        [
+          "upload_id",
+          "file_name",
+          "file_size",
+          "chunk_size",
+          "total_chunks",
+          "received",
+          "missing",
+          "progress",
+          "complete",
+          "expires_at"
+        ]
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.1 分片上传",
+      "case": "init 返回分片大小与总片数",
+      "ok": true,
+      "expected": "chunk_size/total_chunks",
+      "actual": [
+        16384,
+        4
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.1 分片上传",
+      "case": "断点查询返回缺失片号",
+      "ok": true,
+      "expected": "缺失 3 片",
+      "actual": [
+        3,
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.1 分片上传",
+      "case": "乱序+重复上传后片齐（幂等）",
+      "ok": true,
+      "expected": "complete=true",
+      "actual": [
+        true,
+        [
+          0,
+          3,
+          2,
+          1
+        ]
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F1.1 分片上传",
+      "case": "合并入库成功",
+      "ok": true,
+      "expected": "201 + book_id",
+      "actual": [
+        201,
+        0,
+        "BUILDING"
+      ],
+      "http": 201,
+      "note": ""
+    },
+    {
+      "section": "F1.1 分片上传",
+      "case": "完成后会话失效（410）",
+      "ok": true,
+      "expected": "410",
+      "actual": 410,
+      "http": 410,
+      "note": ""
+    },
+    {
+      "section": "F1.1 分片上传",
+      "case": "放弃上传返回 204",
+      "ok": true,
+      "expected": "204",
+      "actual": 204,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F1.1 分片上传",
+      "case": "放弃后会话不可用",
+      "ok": true,
+      "expected": "410",
+      "actual": 410,
+      "http": 410,
+      "note": ""
+    }
+  ]
+}
