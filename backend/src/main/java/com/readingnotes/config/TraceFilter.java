@@ -11,8 +11,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 
 /**
- * 全链路 trace 过滤器（需求 §6.4.2）
- * 响应头统一带 X-Trace-Id；客户端传入则沿用。
+ * 全链路 trace 过滤器（需求 §6.4.2）。
+ * <p>
+ * 每个请求进来先沿用客户端传来的 X-Trace-Id，没有则新建，并回写响应头，
+ * 请求结束时清理 MDC，避免 Tomcat 线程复用导致 trace 串号。
  */
 @Component
 public class TraceFilter extends OncePerRequestFilter {
@@ -22,11 +24,10 @@ public class TraceFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
         try {
+            // 仅当客户端显式传入时才沿用；否则下面 current() 会自动新建
             TraceContext.use(request.getHeader("X-Trace-Id"));
-            if (TraceContext.current() == null) {
-                TraceContext.newTrace();
-            }
-            response.setHeader("X-Trace-Id", TraceContext.current());
+            String traceId = TraceContext.current();
+            response.setHeader("X-Trace-Id", traceId);
             chain.doFilter(request, response);
         } finally {
             TraceContext.clear();

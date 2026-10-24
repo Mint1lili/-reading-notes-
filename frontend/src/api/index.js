@@ -1,19 +1,210 @@
+/**
+ * 前端 API 层：按功能模块分组，一个后端接口对应一个函数。
+ *
+ * 约定：
+ * - 返回值已是响应信封里的 data（由 http.js 统一解包），调用方无需判断 code；
+ * - 参数名沿用后端的下划线风格（page_size / chunk_size / from_batch），
+ *   避免在两层之间来回转换命名，减少对不上的风险；
+ * - 失败一律 reject，页面层按需 catch。
+ */
 import http from './http'
 
 // ===== 健康检查 =====
+/** 整体健康：status / chroma / 豆包 key 是否配置 */
 export const health = () => http.get('/health')
 
-// ===== 书籍管理（F1） =====
+// =============================================================================
+// 书籍管理（F1）
+// =============================================================================
+/** 分页列表：{ page, page_size, keyword?, status? } */
 export const listBooks = (params) => http.get('/books', { params })
-export const getBook = (bookId) => http.get(`/books/${bookId}`)
-// 待后端实现后启用：
-// export const uploadBook = (formData) => http.post('/books/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
 
-// ===== AI 交互（F3，SSE 由 ReaderView 直接 fetch 处理） =====
+/** 详情（含构建状态与识别率） */
+export const getBook = (bookId) => http.get(`/books/${bookId}`)
+
+/** 编辑元数据：{ title?, author? } */
+export const updateBook = (bookId, payload) => http.patch(`/books/${bookId}`, payload)
+
+/**
+ * 软删除（移入回收站）。
+ * 后端契约是 DELETE + JSON body（{ keep_notes }），axios 的 delete 需要显式传 data。
+ */
+export const deleteBook = (bookId, payload = { keep_notes: true }) =>
+  http.delete(`/books/${bookId}`, { data: payload })
+
+/** 重建知识库：body { chunk_size, overlap }，返回 202 */
+export const rebuildBook = (bookId, payload = {}) =>
+  http.post(`/books/${bookId}/rebuild`, payload)
+
+// 回收站：列表 / 恢复 / 彻底删除
+export const listTrash = (params) => http.get('/books/trash', { params })
+
+/** 恢复：原文件还在则自动重建，否则回到 FAILED 并提示重新上传 */
+export const restoreBook = (bookId) => http.post(`/books/${bookId}/restore`)
+
+/** 彻底删除：PDF、切片、向量一并清除，不可恢复 */
+export const purgeBook = (bookId) => http.delete(`/books/${bookId}/purge`)
+
+/**
+ * 上传 PDF（一次性，适合 ≤10MB 的小文件）。
+ * @param {File} file
+ * @param {{title?:string, author?:string, confirm_duplicate?:boolean}} meta
+ *        confirm_duplicate=true 用于重名二次确认（后端 20003 → 前端确认后重发）
+ * @param {(percent:number)=>void} onProgress 上传进度回调（0~100）
+ */
+export const uploadBook = (file, meta = {}, onProgress) => {
+  const form = new FormData()
+  form.append('file', file)
+  if (meta.title) form.append('title', meta.title)
+  if (meta.author) form.append('author', meta.author)
+  if (meta.confirm_duplicate) form.append('confirm_duplicate', 'true')
+  return http.post('/books/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 0, // 大文件不设超时
+    onUploadProgress: (e) => {
+      if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100))
+    }
+  })
+}
+
+// =============================================================================
+// 分片上传（断点续传）：init → 逐片 PUT → complete
+// =============================================================================
+
+/** 初始化会话；同文件、同大小重复调用会复用未过期会话 */
+export const uploadInit = (fileName, fileSize) =>
+  http.post('/books/upload/init', { fileName, fileSize })
+
+/** 上传单片（index 从 0 开始）；同一下标重复上传会覆盖，天然幂等 */
+export const uploadChunk = (uploadId, index, blob) => {
+  const form = new FormData()
+  form.append('file', blob)
+  return http.put(`/books/upload/${uploadId}/chunk?index=${index}`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 0
+  })
+}
+
+/** 查询进度：received / missing / progress / complete，断线重连后据此补片 */
+export const uploadStatus = (uploadId) => http.get(`/books/upload/${uploadId}`)
+
+/** 合并分片并入库；返回与一次性上传相同的结构 */
+export const uploadComplete = (uploadId, meta = {}) =>
+  http.post(`/books/upload/${uploadId}/complete`, {
+    title: meta.title,
+    author: meta.author,
+    confirmDuplicate: !!meta.confirm_duplicate
+  })
+
+/** 放弃上传：清除临时分片与会话 */
+export const uploadAbort = (uploadId) => http.delete(`/books/upload/${uploadId}`)
+
+/**
+ * 分片上传（>10MB 时使用）：断网/刷新后从 localStorage 取回 uploadId，只补缺失片。
+ * 单片刻重试 3 次，仍失败则抛错并把进度留在本地，下次进入还能续。
+ *
+ * @param {File} file
+ * @param {{title?:string, author?:string, confirm_duplicate?:boolean}} meta
+ * @param {(percent:number)=>void} onProgress
+ */
+export const uploadBookResumable = async (file, meta = {}, onProgress) => {
+  const cacheKey = `rn_upload_${file.name}_${file.size}`
+  let uploadId = localStorage.getItem(cacheKey)
+  let session = null
+  if (uploadId) {
+    try {
+      session = await uploadStatus(uploadId)
+    } catch {
+      // 会话过期：重新初始化
+      uploadId = null
+    }
+  }
+  if (!session) {
+    session = await uploadInit(file.name, file.size)
+    uploadId = session.upload_id
+    localStorage.setItem(cacheKey, uploadId)
+  }
+
+  const chunkSize = session.chunk_size
+  const total = session.total_chunks
+  let done = (session.received || []).length
+  for (const index of session.missing || []) {
+    const start = index * chunkSize
+    const blob = file.slice(start, Math.min(start + chunkSize, file.size))
+    let ok = false
+    let lastErr = null
+    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+      try {
+        await uploadChunk(uploadId, index, blob)
+        ok = true
+      } catch (e) {
+        lastErr = e
+        await new Promise((r) => setTimeout(r, 300 * (attempt + 1)))
+      }
+    }
+    if (!ok) throw lastErr
+    done += 1
+    if (onProgress) onProgress(Math.min(99, Math.round((done / total) * 100)))
+  }
+
+  try {
+    const data = await uploadComplete(uploadId, meta)
+    localStorage.removeItem(cacheKey)
+    return data
+  } catch (e) {
+    // 20003 重名：后端保留了会话，确认后可直接重试，不必重传
+    if (e?.response?.data?.code !== 20003) {
+      localStorage.removeItem(cacheKey)
+    }
+    throw e
+  }
+}
+
+/** 删除预检：二次确认弹窗展示影响面 */
+export const deletePreview = (bookId) => http.get(`/books/${bookId}/delete-preview`)
+
+/** 原书 PDF 地址（引用溯源在新窗口打开） */
+export const bookFileUrl = (bookId) => `/api/v1/books/${bookId}/file`
+
+// =============================================================================
+// 构建任务（F2）
+// =============================================================================
+
+/** 构建状态：前端轮询用，含 build_progress / last_completed_batch / warnings */
+export const getBuildStatus = (bookId) => http.get(`/books/${bookId}/build/status`)
+
+/** 重试 / 断点续传：body { from_batch }，省略则从 last_completed_batch 续跑 */
+export const retryBuild = (bookId, fromBatch) =>
+  http.post(`/books/${bookId}/build/retry`,
+    fromBatch === undefined || fromBatch === null ? {} : { from_batch: fromBatch })
+
+/** 取消构建：已完成的批次保留，仍可 retry 续跑 */
+export const cancelBuild = (bookId) => http.post(`/books/${bookId}/build/cancel`)
+
+/**
+ * 构建统计 / 构建前试算。
+ * 不传参 → 已落库切片实测；传 { granularity } 或 { chunk_size } → 内存试算（不落库、不调 Embedding）
+ */
+export const getBuildPreview = (bookId, params) =>
+  http.get(`/books/${bookId}/build/preview`, { params })
+
+/** 章节结构：扁平列表（含 level / chapter_path），前端自行还原树 */
+export const listChapters = (bookId) => http.get(`/books/${bookId}/chapters`)
+
+/** 切片分页：{ page, page_size, chapter? }，chapter 为路径前缀 */
+export const listChunks = (bookId, params) => http.get(`/books/${bookId}/chunks`, { params })
+
+// =============================================================================
+// AI 交互（F3，SSE 由 ReaderView 直接 fetch 处理）
+// =============================================================================
 // export const qaStream = (payload) => ...
 
-// ===== 笔记（F4） =====
+// =============================================================================
+// 笔记（F4）
+// =============================================================================
 // export const listNotes = (params) => http.get('/notes', { params })
 
-// ===== 设置（F5） =====
+// =============================================================================
+// 设置（F5）
+// =============================================================================
 // export const getRagSettings = () => http.get('/settings/rag')

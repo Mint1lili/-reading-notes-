@@ -32,18 +32,45 @@ app:
 
 # 豆包大模型 API（火山引擎 Ark，OpenAI 兼容端点）
 # 生产必须通过环境变量注入：setx DOUBAO_API_KEY "你的key"
+# 启动前自检：GET /api/v1/health/doubao （真实打一次 /embeddings，确认 key/模型/维度）
 doubao:
   api-key: ${DOUBAO_API_KEY:}
   base-url: ${DOUBAO_BASE_URL:https://ark.cn-beijing.volces.com/api/v3}
-  chat-model: ${DOUBAO_CHAT_MODEL:doubao-pro-32k}
-  embedding-model: ${DOUBAO_EMBEDDING_MODEL:doubao-embedding-text-240715}
-  embedding-dim: 1024
-  batch-size: 16          # Embedding 批量大小（F2.4）
-  max-retries: 3          # 429 指数退避重试上限
+  # 必须填方舟控制台的 Model ID 或推理接入点 ID（ep-xxxxxxxx），且需先在「开通管理」开通
+  chat-model: ${DOUBAO_CHAT_MODEL:doubao-seed-2-1-turbo-260628}
+  # 当前在售的向量化模型为 doubao-embedding-vision-251215（多模态，支持文本，最高 2048 维、可降 1024）
+  embedding-model: ${DOUBAO_EMBEDDING_MODEL:doubao-embedding-vision-251215}
+  # 注意：text-240715 原生 2560 维，此处靠请求参数 dimensions 降到 1024；
+  # 若所用模型/接入点不支持 dimensions，启动日志与 /health/doubao 会提示实际维度，按提示改这里并重建知识库。
+  embedding-dim: ${DOUBAO_EMBEDDING_DIM:1024}
+  # text=POST /embeddings（字符串数组）; multimodal=POST /embeddings/multimodal（对象数组，vision 模型专用）
+  # auto=先按 text 探测，模型不提供该端点时自动切到 multimodal 并记住
+  embedding-mode: ${DOUBAO_EMBEDDING_MODE:auto}
+  embedding-instruction: ${DOUBAO_EMBEDDING_INSTRUCTION:}   # 多模态端点可选检索指令，留空不发送
+  embedding-sequential-fallback: true    # 批量返回条数异常时退回逐条请求（慢但结果正确）
+  batch-size: ${DOUBAO_BATCH_SIZE:10}   # 单次 /embeddings 条数（官方建议 ≤4 性能最佳；服务端上限更小时客户端自动降批）
+  max-retries: ${DOUBAO_MAX_RETRIES:3}  # 429/5xx/超时 退避重试上限（1s→2s→4s）
+  connect-timeout-seconds: 10
+  chat-timeout-seconds: 120             # 非流式对话超时
+  stream-timeout-seconds: 300           # 流式对话整体超时（长回答）
+  embedding-timeout-seconds: 35         # 单批 Embedding 超时（需求 §8：30s 超时 → 30002）
+  retry-base-ms: 1000                   # 退避基数，配合 max-retries 形成 1s→2s→4s
+  retry-max-ms: 8000                    # 单次退避上限，也约束 Retry-After
+  max-input-chars: 6000                 # 单条文本字符上限（模型单条 4096 token）
+  stream-include-usage: false           # 流式对话是否请求 usage（部分模型不支持，默认关）
+  thinking: ${DOUBAO_THINKING:disabled}  # 深度思考 disabled/enabled/auto；推理模型默认思考会让首字等数十秒，阅读问答关掉
 
 # Chroma 向量库（Server 模式）
+# api-version: v2 对应 chromadb >= 1.0（推荐，pip install chromadb==1.5.9）
+#              v1 对应 chromadb 0.4.x ~ 0.6.x（旧版，1.x 服务端已移除 v1，会返回 410）
 chroma:
-  base-url: ${CHROMA_BASE_URL:http://localhost:8000}
+  # 用显式 IPv4 而非 localhost：Chroma 1.x 默认只监听 IPv6 的 localhost，
+  # 而 JVM 解析 localhost 时优先 IPv4，会出现「curl 能连、Java 连不上」的现象。
+  # 启动命令须配套指定：chroma run --path ./data/chroma --host 127.0.0.1 --port 8000
+  base-url: ${CHROMA_BASE_URL:http://127.0.0.1:8000}
+  api-version: ${CHROMA_API_VERSION:v2}
+  tenant: ${CHROMA_TENANT:default_tenant}
+  database: ${CHROMA_DATABASE:default_database}
   health-check-interval-ms: 30000
 
 # RAG 默认参数（F5.2，可在设置页运行时调整）
@@ -60,10 +87,24 @@ rag:
 # 构建任务（F2）
 build:
   worker-threads: 1       # 串行队列，避免 Embedding 并发限流
-  chunk-soft-limit: 5000  # 单书切片软上限
+  chunk-soft-limit: 5000  # 单书切片软上限（超出仅红色警告，不阻塞）
+  chunk-hard-limit: 8000  # 单书切片硬上限（超出截断，保护内存与额度）
+  chunk-size-min: 200     # 切片粒度下限
+  chunk-size-max: 1200    # 切片粒度上限（粗 1000 / 中 600 / 细 300）
+  max-pages: 2000         # 单本 PDF 页数上限（超出拒绝，防解析耗时不可控）
+  upload-chunk-size: 5242880      # 分片上传单片 5MB（F1.1 断点续传）
+  upload-session-ttl-hours: 24    # 分片上传会话有效期
+  embedding-batch-size: 16
+  rate-limit-cooldown-ms: 2000       # 某批触发 429 后，下一批前主动冷却（毫秒）
+  chapter-rate-warn-threshold: 0.5   # 章节识别率 < 50% 提示退化为纯向量检索
+  trash-retain-days: 7    # 回收站保留天数（F1.2）
+  trash-cleanup-cron: "0 30 3 * * ?" # 每日 03:30 清理过期书籍
 
 logging:
   level:
     com.readingnotes: info
   file:
     name: ${APP_DATA_DIR:../data}/logs/app.log
+  charset:
+    # 日志里有中文错误提示；固定 UTF-8 便于日志平台/IDE 正常查看（控制台仍跟随系统编码）
+    file: UTF-8

@@ -71,9 +71,21 @@ setx DOUBAO_API_KEY "你的火山引擎豆包 API Key"
 
 | 顺序 | 服务 | 命令 |
 |---|---|---|
-| ① | Chroma 向量库 | `chroma run --port 8000` |
+| ① | Chroma 向量库 | `chroma run --path ./data/chroma --host 127.0.0.1 --port 8000` |
 | ② | 后端 | `cd backend && mvn spring-boot:run` |
 | ③ | 前端 | `cd frontend && npm install && npm run dev` |
+
+> **Chroma 版本要求：`chromadb==1.5.9`**
+> ```bash
+> pip install chromadb==1.5.9
+> ```
+> 两点必须注意，否则后端会连不上：
+> 1. **不能用 0.5.x**：chromadb 1.x 起服务端只实现 v2 API，访问 `/api/v1/*` 统一返回
+>    `410 {"error":"Unimplemented","message":"The v1 API is deprecated. Please use /v2 apis"}`，
+>    而 0.5.x 客户端又不认识 v2 路径，两者不可混用。
+>    若团队已装 0.5.x，可通过环境变量 `CHROMA_API_VERSION=v1` 让后端回退到旧路径（此时无需改代码）。
+> 2. **必须显式指定 `--host 127.0.0.1`**：Chroma 1.x 默认只监听 IPv6 的 `localhost`（`[::1]:8000`），
+>    而 JVM 解析 `localhost` 优先走 IPv4，会出现「curl 能连、Java 连不上」的现象。
 
 打开 `http://localhost:5173`，健康检查：`http://127.0.0.1:8080/api/v1/health`（显示 Chroma 与豆包 key 状态）。
 
