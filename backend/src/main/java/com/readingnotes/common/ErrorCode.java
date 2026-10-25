@@ -23,6 +23,11 @@ public enum ErrorCode {
     DUPLICATE_BOOK(20003, "已存在同名书籍，是否继续上传？", 409),
     BOOK_BUILDING(20004, "书籍正在构建中，请先等待或取消", 409),
     BOOK_NOT_FOUND(20005, "书籍不存在或已删除", 404),
+    PDF_ENCRYPTED(20006, "该 PDF 已加密，请先解除密码保护", 422),
+    PDF_TOO_MANY_PAGES(20007, "本书页数超过上限，暂不支持", 422),
+    PDF_DAMAGED(20008, "文件已损坏或不是有效的 PDF", 422),
+    UPLOAD_SESSION_GONE(20009, "上传会话不存在或已过期，请重新上传", 410),
+    FILE_NOT_FOUND_ON_DISK(20010, "原书文件已丢失，请重新上传", 410),
 
     // ===== 构建 F2 3xxxx =====
     SCANNED_PDF(30001, "未检测到文本内容，可能是扫描件，本期暂不支持", 422),
@@ -54,7 +59,15 @@ public enum ErrorCode {
     // ===== 外部依赖 7xxxx =====
     CHROMA_DOWN(70001, "知识库服务未启动，请检查 Chroma", 503),
     DIM_MISMATCH(70002, "Chroma 与 Embedding 维度不一致", 503),
-    DOUBAO_DOWN(70003, "豆包 API 不可用", 503);
+    DOUBAO_DOWN(70003, "豆包 API 不可用", 503),
+    DOUBAO_AUTH_FAILED(70004, "豆包 API Key 未配置或无效，请检查 DOUBAO_API_KEY", 503),
+    DOUBAO_MODEL_NOT_FOUND(70005, "豆包模型不存在或未开通，请检查模型名/接入点 ID", 503),
+    DOUBAO_BAD_REQUEST(70006, "豆包 API 请求参数异常", 400),
+    DOUBAO_RATE_LIMITED(70007, "豆包 API 触发限流，请稍后重试", 429),
+    DOUBAO_BATCH_TOO_LARGE(70008, "豆包 Embedding 单次请求条数超出限制", 400),
+    DOUBAO_MODEL_NOT_OPEN(70009,
+            "该模型未在当前账号开通，请到方舟控制台「开通管理」开通后再试"
+                    + "（https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement）", 503);
 
     private final int code;
     private final String message;
