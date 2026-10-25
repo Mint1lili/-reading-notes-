@@ -370,15 +370,24 @@ public class DoubaoClient {
      * doubao-embedding-vision-* 只暴露这个端点（官方文档 82379/1554710）。
      */
     private List<List<Float>> embedMultimodal(List<String> batch, boolean[] rateLimited, boolean allowTextFallback) {
-        // 方舟 multimodal 端点对多 input 批量请求只返回单对象 data（聚合/首条），
-        // 逐条请求才能拿到每个文本的向量，故此处强制逐条调用 postSingle。
-        List<List<Float>> out = new ArrayList<>(batch.size());
+        ObjectNode node = mapper.createObjectNode();
+        node.put("model", props.getEmbeddingModel());
+        ArrayNode input = mapper.createArrayNode();
+        for (String text : batch) {
+            input.addObject().put("type", "text").put("text", text);
+        }
+        node.set("input", input);
+        node.put("encoding_format", "float");
+        String instruction = props.getEmbeddingInstruction();
+        if (instruction != null && !instruction.isBlank()) {
+            node.put("instructions", instruction);
+        }
+        if (dimensionsParamSupported.get() && props.getEmbeddingDim() > 0) {
+            node.put("dimensions", props.getEmbeddingDim());
+        }
+        JsonNode resp;
         try {
-            for (String text : batch) {
-                JsonNode resp = postSingle(text, rateLimited);
-                out.add(toVector(resp.path("data").path("embedding")));
-            }
-            return out;
+            resp = postEmbedding("/embeddings/multimodal", node, rateLimited);
         } catch (DoubaoHttpError e) {
             if (allowTextFallback && isAutoMode()
                     && (e.getStatus() == 404 || e.getStatus() == 400) && !isModelNotOpen(e.getRaw())) {
@@ -389,6 +398,8 @@ public class DoubaoClient {
             }
             throw e;
         }
+        // 批量请求在多模态端点可能只返回单对象 data，parseVectors 会自动退回逐条（postSingle）
+        return parseVectors(resp, batch.size(), batch, rateLimited);
     }
 
     /**
