@@ -198,6 +198,26 @@
           </el-descriptions-item>
         </el-descriptions>
 
+        <!-- 阅读/分析入口：全文阅读（路 A）、AI 读书、本书笔记 -->
+        <div class="drawer-actions" style="margin-top: 12px">
+          <el-button
+            type="primary"
+            :disabled="current.status !== 'READY'"
+            @click="goReadBook(current)"
+          >
+            阅读全文
+          </el-button>
+          <el-button
+            type="success"
+            plain
+            :disabled="current.status !== 'READY'"
+            @click="goAIBook(current)"
+          >
+            AI 读书
+          </el-button>
+          <el-button @click="goNotesBook(current)">查看笔记</el-button>
+        </div>
+
         <el-alert
           v-for="(w, i) in buildWarnings"
           :key="i"
@@ -375,6 +395,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   cancelBuild,
@@ -398,6 +419,7 @@ import {
 // 列表状态
 // ---------------------------------------------------------------------------
 const books = ref([])
+const router = useRouter()
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(20)
@@ -684,6 +706,11 @@ async function openDetail (row) {
   buildWarnings.value = []
   await refreshDetail(row.book_id)
 }
+
+// ===== 阅读/分析入口（READY 才可读） =====
+const goReadBook = (b) => router.push(`/book/${b.book_id}/read`)
+const goAIBook = (b) => router.push(`/reader?book=${b.book_id}`)
+const goNotesBook = (b) => router.push(`/notes?bookId=${b.book_id}`)
 
 /**
  * 刷新详情：详情与构建状态并行请求，任一失败都不影响另一个（各自 catch 成 null）。
