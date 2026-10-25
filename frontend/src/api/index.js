@@ -239,6 +239,10 @@ export const toggleNoteIndex = (noteId, enable) => http.post(`/notes/${noteId}/i
 /** AI 产物一键存为笔记（API §9.9；source_type=AI，来源书必须真实存在） */
 export const createNoteFromAi = (payload) => http.post('/notes/from-ai', payload)
 
+// ===== AI 书本问答（F3） =====
+/** 书本内 RAG 问答：body { book_id, question }，返回 { answer, citations } */
+export const aiQa = (payload) => http.post('/ai/qa', payload)
+
 /** 导出笔记（API §9.11；scope=selected/book，format=markdown/pdf） */
 export const exportNotes = (payload) => http.post('/notes/export', payload)
 

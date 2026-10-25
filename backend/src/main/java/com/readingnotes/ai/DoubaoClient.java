@@ -271,7 +271,7 @@ public class DoubaoClient {
         }
         List<String> prepared = new ArrayList<>(texts.size());
         for (String t : texts) {
-            prepared.add(prepareText(t));
+            prepared.add(prepareText(sanitizeJsonControlChars(t)));
         }
 
         List<List<Float>> out = new ArrayList<>(prepared.size());
@@ -299,6 +299,27 @@ public class DoubaoClient {
                     "豆包向量化返回条数异常（请求 " + prepared.size() + "，返回 " + out.size() + "）");
         }
         return out;
+    }
+
+    /**
+     * 清除 PDF 解析产物中的非法 JSON 控制字符（0x00-0x1F 中除 \t \n \r 外），
+     * 防止 Jackson 原样输出导致方舟 "could not parse the JSON body"（70006）。
+     * 仅影响向量化请求文本，不改变库内原文。
+     */
+    private static String sanitizeJsonControlChars(String t) {
+        if (t == null || t.isEmpty()) {
+            return t;
+        }
+        StringBuilder sb = new StringBuilder(t.length());
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            if (c == '\t' || c == '\n' || c == '\r' || c >= 0x20) {
+                sb.append(c);
+            } else {
+                sb.append(' ');
+            }
+        }
+        return sb.toString();
     }
 
     /** 单批请求（已保证 ≤ 当前批大小），内部完成重试与接口形态自适应 */
@@ -377,6 +398,7 @@ public class DoubaoClient {
             }
             throw e;
         }
+        // 批量请求在多模态端点可能只返回单对象 data，parseVectors 会自动退回逐条（postSingle）
         return parseVectors(resp, batch.size(), batch, rateLimited);
     }
 
@@ -478,12 +500,15 @@ public class DoubaoClient {
         return vectors;
     }
 
-    /** 逐条请求单文本（仅用于返回条数异常的兜底） */
+    /** 逐条请求单文本（仅用于返回条数异常的兜底与 multimodal 逐条向量化） */
     private JsonNode postSingle(String text, boolean[] rateLimited) {
         ObjectNode node = mapper.createObjectNode();
         node.put("model", props.getEmbeddingModel());
         if (MODE_MULTIMODAL.equals(resolveEmbeddingMode())) {
-            node.set("input", mapper.createArrayNode().addObject().put("type", "text").put("text", text));
+            // 注意：createArrayNode().addObject() 返回 ObjectNode，必须先用变量持有数组再 set
+            ArrayNode arr = mapper.createArrayNode();
+            arr.addObject().put("type", "text").put("text", text);
+            node.set("input", arr);
             node.put("encoding_format", "float");
             String instruction = props.getEmbeddingInstruction();
             if (instruction != null && !instruction.isBlank()) {

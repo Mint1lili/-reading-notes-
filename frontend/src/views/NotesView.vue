@@ -113,8 +113,8 @@
               @click.stop
               @change="toggleSelect(n.note_id)"
             />
-            <div class="card-title">{{ n.title || '（无标题）' }}</div>
-            <div class="card-preview">{{ n.content_preview || '（无正文）' }}</div>
+            <div class="card-title" v-html="highlight(n.title || '（无标题）')"></div>
+            <div class="card-preview" v-html="highlight(n.content_preview || '（无正文）')"></div>
 
             <div class="card-tags" v-if="n.tags && n.tags.length">
               <el-tag v-for="t in n.tags" :key="t.tag_id" size="small" round effect="plain" :color="t.color">
@@ -642,6 +642,25 @@ async function addTag() {
 
 const fmtDate = (iso) => (iso ? iso.slice(0, 16).replace('T', ' ') : '')
 
+// ==================== 搜索高亮 ====================
+// 搜索结果命中词标黄：先转义 HTML 防注入，再对关键词做大小写不敏感替换为 <mark>。
+// keyword 为空时仅转义输出（与原先纯文本显示等价，但不引入注入风险）。
+const escHtml = (s) =>
+  String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+
+const highlight = (text) => {
+  const safe = escHtml(text)
+  const kw = keyword.value?.trim()
+  if (!kw) return safe
+  try {
+    const escKw = escHtml(kw).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return safe.replace(new RegExp(escKw, 'gi'), (m) => `<mark class="hl">${m}</mark>`)
+  } catch {
+    return safe // 正则异常（理论上不会发生）时降级为无高亮
+  }
+}
+
 /** 极简 Markdown → HTML（不引第三方依赖，够用即可） */
 function renderMd(src) {
   if (!src) return '<span class="md-empty">（无内容）</span>'
@@ -717,6 +736,7 @@ onMounted(() => {
 .trash-actions { margin-left: auto; display: flex; gap: 6px; }
 .pick { position: absolute; top: 10px; right: 10px; }
 .card-title { font-weight: 600; font-size: 15px; color: #1f2937; margin: 0 26px 7px 0; line-height: 1.4; }
+.card-title :deep(.hl), .card-preview :deep(.hl) { background: #fde68a; color: #1f2937; border-radius: 2px; padding: 0 1px; }
 .card-preview {
   font-size: 13px; color: #606266; line-height: 1.6; margin-bottom: 9px;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;

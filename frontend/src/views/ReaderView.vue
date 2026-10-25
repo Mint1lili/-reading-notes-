@@ -125,7 +125,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, Promotion, Fold, Expand } from '@element-plus/icons-vue'
-import { listBooks, createNote, createNoteFromAi } from '../api'
+import { listBooks, createNote, aiQa } from '../api'
 
 const route = useRoute()
 
@@ -141,7 +141,7 @@ const bodyRef = ref()
 const citeOpen = ref(true)
 const activeCitations = ref([])
 
-const DEMO = true // 后端 /ai/* 未实现时演示闭环；接口接入后置 false 走真实调用
+const DEMO = false // 后端 /api/v1/ai/qa 已接入，走真实 RAG 问答
 
 const coverColors = ['#14532d', '#2f855a', '#5b8c6a', '#86b59b', '#3e6b4f', '#1f7a54']
 function coverColor(title) {
@@ -245,18 +245,35 @@ async function send() {
   await generateAnswer(q)
 }
 
-// 生成一条 AI 回答（演示流式输出）
+// 生成一条 AI 回答（真实 RAG：后端检索 + 豆包生成；打字机模拟流式展示）
 async function generateAnswer(question) {
   busy.value = true
-  // 真实接口占位：后端 /ai/qa/stream 等实现后替换此处
+  let full = ''
+  let citations = []
   if (!DEMO) {
-    // 此处留待接入 SSE 流式接口
+    try {
+      const data = await aiQa({ book_id: currentBook.value.book_id, question })
+      full = data.answer || '（未返回内容）'
+      citations = (data.citations || []).map((c) => ({
+        book: currentBook.value?.title || '本书',
+        page: c.page || 0,
+        text: c.snippet || '',
+        similarity: c.similarity,
+        chapter_path: c.chapter_path,
+        chunk_id: c.chunk_id
+      }))
+    } catch (e) {
+      busy.value = false
+      ElMessage.error(e?.message || 'AI 问答暂不可用，请稍后再试')
+      return
+    }
+  } else {
+    await new Promise((r) => setTimeout(r, 500))
+    full = demoAnswer(question)
+    citations = demoCitationsFor()
   }
-  await new Promise((r) => setTimeout(r, 500))
   busy.value = false
 
-  const full = demoAnswer(question)
-  const citations = demoCitationsFor()
   const m = { role: 'ai', content: full, citations, streaming: true }
   messages.push(m)
   scrollToBottom()
@@ -305,13 +322,8 @@ async function saveAsNote(m) {
     const title = `AI ${mode.value === 'summary' ? '摘要' : mode.value === 'mindmap' ? '导图' : '问答'} · 《${currentBook.value.title}》`
     const content = m.content.replace(/<[^>]+>/g, '')
     const sourceType = mode.value === 'summary' ? 'AI_SUMMARY' : mode.value === 'mindmap' ? 'AI_MINDMAP' : 'AI_QA'
-    if (DEMO) {
-      // 演示模式：直接走通用创建（/notes/from-ai 依赖 AI 产物记录，演示环境无真实记录会 400）
-      await createNote({ title, content, source_type: sourceType })
-    } else {
-      // 真实模式：AI 产物已落库，按产物记录创建
-      await createNoteFromAi({ source_type: sourceType, title, auto_tag: true })
-    }
+    // 统一走通用创建（后端 /ai/qa 不落 AI 产物表，from-ai 会因缺产物记录 400）
+    await createNote({ title, content, source_type: sourceType })
     ElMessage.success('已保存到我的笔记')
   } catch { /* 已提示 */ }
 }
