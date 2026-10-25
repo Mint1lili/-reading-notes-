@@ -277,7 +277,10 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+
+const route = useRoute()
 import {
   createNote, createNoteLink, createTag, deleteNote, exportNotes,
   getNote, getNoteLinks, listBooks, listNotes, listTags, purgeNote,
@@ -655,6 +658,9 @@ function renderMd(src) {
 }
 
 onMounted(() => {
+  // 支持从书库跳转：/notes?bookId=xx 自动按书筛选
+  const qb = route.query.bookId || route.query.book
+  if (qb) filters.bookId = String(qb)
   reload()
   loadTags()
   loadBooks()
@@ -665,18 +671,26 @@ onMounted(() => {
 <style scoped>
 .notes-page { display: flex; flex-direction: column; height: 100%; }
 
-/* 顶部工具条 */
-.toolbar { display: flex; align-items: center; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid #ebeef5; }
+/* 顶部工具条：白底卡片 */
+.toolbar {
+  display: flex; align-items: center; gap: 10px;
+  background: #fff; border: 1px solid #e8eee9; border-radius: 12px;
+  padding: 12px 16px;
+}
 .spacer { flex: 1; }
 
 .body { display: flex; flex: 1; min-height: 0; margin-top: 14px; }
 
-/* 左栏 */
-.sidebar { width: 200px; flex-shrink: 0; border-right: 1px solid #ebeef5; padding-right: 12px; overflow-y: auto; }
-.side-title { font-size: 12px; color: #909399; margin: 12px 0 6px; }
+/* 左栏：白底卡片 */
+.sidebar {
+  width: 200px; flex-shrink: 0;
+  background: #fff; border: 1px solid #e8eee9; border-radius: 12px;
+  padding: 10px 10px 14px; overflow-y: auto;
+}
+.side-title { font-size: 12px; color: #94a3b8; margin: 10px 6px 6px; }
 .side-item {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #303133;
+  padding: 7px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; color: #303133;
 }
 .side-item:hover { background: #f5f7fa; }
 .side-item.active { background: #e8f5ec; color: #14532d; font-weight: 600; }
