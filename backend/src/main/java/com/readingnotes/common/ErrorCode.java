@@ -54,7 +54,18 @@ public enum ErrorCode {
     // ===== 外部依赖 7xxxx =====
     CHROMA_DOWN(70001, "知识库服务未启动，请检查 Chroma", 503),
     DIM_MISMATCH(70002, "Chroma 与 Embedding 维度不一致", 503),
-    DOUBAO_DOWN(70003, "豆包 API 不可用", 503);
+    DOUBAO_DOWN(70003, "豆包 API 不可用", 503),
+
+    // ===== 认证 8xxxx =====
+    EMAIL_TAKEN(80001, "该邮箱已注册", 409),
+    USER_NOT_FOUND(80002, "该邮箱未注册，请先注册", 401),
+    CAPTCHA_EXPIRED(80003, "验证码已过期，请重新获取", 400),
+    CAPTCHA_WRONG(80004, "验证码错误", 400),
+    CAPTCHA_TOO_FREQUENT(80005, "验证码发送过于频繁，请稍后再试", 429),
+    PASSWORD_NOT_SET(80006, "该账号未设置密码，请使用验证码登录或先设置密码", 400),
+    PASSWORD_WRONG(80007, "邮箱或密码错误", 401),
+    UNAUTHORIZED(80008, "未登录或登录已过期", 401),
+    MAIL_NOT_CONFIGURED(80009, "邮件服务未配置，请填写邮箱账号与 SMTP 授权码", 500);
 
     private final int code;
     private final String message;
