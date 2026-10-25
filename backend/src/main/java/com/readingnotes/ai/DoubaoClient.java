@@ -271,7 +271,7 @@ public class DoubaoClient {
         }
         List<String> prepared = new ArrayList<>(texts.size());
         for (String t : texts) {
-            prepared.add(prepareText(t));
+            prepared.add(prepareText(sanitizeJsonControlChars(t)));
         }
 
         List<List<Float>> out = new ArrayList<>(prepared.size());
@@ -299,6 +299,27 @@ public class DoubaoClient {
                     "豆包向量化返回条数异常（请求 " + prepared.size() + "，返回 " + out.size() + "）");
         }
         return out;
+    }
+
+    /**
+     * 清除 PDF 解析产物中的非法 JSON 控制字符（0x00-0x1F 中除 \t \n \r 外），
+     * 防止 Jackson 原样输出导致方舟 "could not parse the JSON body"（70006）。
+     * 仅影响向量化请求文本，不改变库内原文。
+     */
+    private static String sanitizeJsonControlChars(String t) {
+        if (t == null || t.isEmpty()) {
+            return t;
+        }
+        StringBuilder sb = new StringBuilder(t.length());
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            if (c == '\t' || c == '\n' || c == '\r' || c >= 0x20) {
+                sb.append(c);
+            } else {
+                sb.append(' ');
+            }
+        }
+        return sb.toString();
     }
 
     /** 单批请求（已保证 ≤ 当前批大小），内部完成重试与接口形态自适应 */
@@ -349,24 +370,15 @@ public class DoubaoClient {
      * doubao-embedding-vision-* 只暴露这个端点（官方文档 82379/1554710）。
      */
     private List<List<Float>> embedMultimodal(List<String> batch, boolean[] rateLimited, boolean allowTextFallback) {
-        ObjectNode node = mapper.createObjectNode();
-        node.put("model", props.getEmbeddingModel());
-        ArrayNode input = mapper.createArrayNode();
-        for (String text : batch) {
-            input.addObject().put("type", "text").put("text", text);
-        }
-        node.set("input", input);
-        node.put("encoding_format", "float");
-        String instruction = props.getEmbeddingInstruction();
-        if (instruction != null && !instruction.isBlank()) {
-            node.put("instructions", instruction);
-        }
-        if (dimensionsParamSupported.get() && props.getEmbeddingDim() > 0) {
-            node.put("dimensions", props.getEmbeddingDim());
-        }
-        JsonNode resp;
+        // 方舟 multimodal 端点对多 input 批量请求只返回单对象 data（聚合/首条），
+        // 逐条请求才能拿到每个文本的向量，故此处强制逐条调用 postSingle。
+        List<List<Float>> out = new ArrayList<>(batch.size());
         try {
-            resp = postEmbedding("/embeddings/multimodal", node, rateLimited);
+            for (String text : batch) {
+                JsonNode resp = postSingle(text, rateLimited);
+                out.add(toVector(resp.path("data").path("embedding")));
+            }
+            return out;
         } catch (DoubaoHttpError e) {
             if (allowTextFallback && isAutoMode()
                     && (e.getStatus() == 404 || e.getStatus() == 400) && !isModelNotOpen(e.getRaw())) {
@@ -377,7 +389,6 @@ public class DoubaoClient {
             }
             throw e;
         }
-        return parseVectors(resp, batch.size(), batch, rateLimited);
     }
 
     /**
@@ -478,12 +489,15 @@ public class DoubaoClient {
         return vectors;
     }
 
-    /** 逐条请求单文本（仅用于返回条数异常的兜底） */
+    /** 逐条请求单文本（仅用于返回条数异常的兜底与 multimodal 逐条向量化） */
     private JsonNode postSingle(String text, boolean[] rateLimited) {
         ObjectNode node = mapper.createObjectNode();
         node.put("model", props.getEmbeddingModel());
         if (MODE_MULTIMODAL.equals(resolveEmbeddingMode())) {
-            node.set("input", mapper.createArrayNode().addObject().put("type", "text").put("text", text));
+            // 注意：createArrayNode().addObject() 返回 ObjectNode，必须先用变量持有数组再 set
+            ArrayNode arr = mapper.createArrayNode();
+            arr.addObject().put("type", "text").put("text", text);
+            node.set("input", arr);
             node.put("encoding_format", "float");
             String instruction = props.getEmbeddingInstruction();
             if (instruction != null && !instruction.isBlank()) {
