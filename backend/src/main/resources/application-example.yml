@@ -1,3 +1,15 @@
+# ==============================================================
+# 阅读笔记 · 配置模板（可提交/比赛交付用）
+# --------------------------------------------------------------
+# 用法：复制本文件为 application.yml 后按需修改
+#   cp application-example.yml application.yml    (Linux/macOS)
+#   copy application-example.yml application.yml  (Windows)
+#
+# 敏感项（SMTP 授权码、数据库密码、API Key）一律通过环境变量注入，
+# 不要在本文件中填写真实值，更不要把真实值提交到仓库。
+# 本仓库 .gitignore 已忽略 application.yml，只有本模板会入库。
+# ==============================================================
+
 server:
   port: 8080
 
@@ -21,6 +33,28 @@ spring:
       maximum-pool-size: 8
       minimum-idle: 1
       connection-test-query: SELECT 1
+  # Redis（邮箱验证码存储；本地未装可先装 Redis 或用 Docker）
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+  # 邮箱 SMTP（验证码邮件发件账号）
+  # MAIL_USERNAME 填发件邮箱，MAIL_PASSWORD 填该邮箱的 SMTP 授权码（QQ邮箱：设置→账户→开启SMTP服务）
+  mail:
+    host: ${MAIL_HOST:smtp.qq.com}
+    port: ${MAIL_PORT:465}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    default-encoding: UTF-8
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.ssl.enable: true
 
 # 数据与存储路径（相对项目根 data/）
 app:
@@ -29,6 +63,8 @@ app:
   logs-dir: ${APP_DATA_DIR:../data}/logs
   backups-dir: ${APP_DATA_DIR:../data}/backups
   prompts-dir: ${APP_DATA_DIR:../data}/config/prompts
+  exports-dir: ${APP_DATA_DIR:../data}/exports
+  export-ttl-hours: 1
 
 # 豆包大模型 API（火山引擎 Ark，OpenAI 兼容端点）
 # 生产必须通过环境变量注入：setx DOUBAO_API_KEY "你的key"
@@ -99,6 +135,12 @@ build:
   chapter-rate-warn-threshold: 0.5   # 章节识别率 < 50% 提示退化为纯向量检索
   trash-retain-days: 7    # 回收站保留天数（F1.2）
   trash-cleanup-cron: "0 30 3 * * ?" # 每日 03:30 清理过期书籍
+
+# JWT（认证；secret 至少 32 字节，生产通过环境变量注入）
+jwt:
+  secret: ${JWT_SECRET:reading-notes-secret-key-must-be-at-least-32-bytes-2026}
+  expire-millis: ${JWT_EXPIRE_MILLIS:7200000}
+  issuer: reading-notes
 
 logging:
   level:

@@ -1,5 +1,6 @@
 package com.readingnotes.common;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 /**
@@ -22,7 +23,8 @@ public class Result<T> {
     /** 业务数据，失败时为 null */
     private T data;
 
-    /** 全链路追踪 id，与响应头 X-Trace-Id 一致，便于用户报错时定位日志 */
+    /** 全链路追踪 id，序列化为 trace_id（响应头 X-Trace-Id），便于报错定位日志 */
+    @JsonProperty("trace_id")
     private String traceId;
 
     /**

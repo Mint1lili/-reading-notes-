@@ -1,14 +1,19 @@
 package com.readingnotes.entity;
 
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import lombok.Data;
 
+/**
 /**
  * 书籍实体（数据库设计 §5.1 books 表）。
  * <p>
  * 一行代表一本原书，同时承载"上传 → 构建 → 就绪"的全生命周期状态；
  * 软删除通过 {@code softDelete + deletedAt + purgeAt} 三个字段表达，物理行保留 7 天供恢复。
+ * <p>序列化统一 snake_case（对齐 API 文档 §9 与前端读取约定，如 book_id）。
  */
 @Data
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public class Book {
 
     /** 业务主键，格式 {@code book_<32位hex>} */
