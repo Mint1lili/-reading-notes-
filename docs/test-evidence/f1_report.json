@@ -1,0 +1,140 @@
+{
+  "book_id": "book_b920d2622bb848719ae1c840b4b2a22b",
+  "dup_id": "book_e7d4c47074b949bd9f7cbef438618232",
+  "results": [
+    {
+      "section": "F1.1 上传校验",
+      "case": "扩展名非 .pdf",
+      "ok": true,
+      "expected": "415/20001",
+      "actual": [
+        415,
+        20001,
+        "请上传 PDF 文件"
+      ],
+      "http": 415,
+      "note": ""
+    },
+    {
+      "section": "F1.1 上传校验",
+      "case": "文件 > 50MB",
+      "ok": true,
+      "expected": "413/20002",
+      "actual": [
+        413,
+        20002,
+        "文件不能超过 50MB"
+      ],
+      "http": 413,
+      "note": ""
+    },
+    {
+      "section": "F1.1 上传校验",
+      "case": "魔数非 %PDF-",
+      "ok": true,
+      "expected": "422/20008",
+      "actual": [
+        422,
+        20008,
+        "文件已损坏或不是有效的 PDF"
+      ],
+      "http": 422,
+      "note": ""
+    },
+    {
+      "section": "F1.1 上传校验",
+      "case": "扫描件无文字层",
+      "ok": true,
+      "expected": "422/30001",
+      "actual": [
+        422,
+        30001,
+        "未检测到可复制文字，可能是扫描件。本期暂不支持扫描件，请使用文字版 PDF（可复制）"
+      ],
+      "http": 422,
+      "note": ""
+    },
+    {
+      "section": "F1.1 上传校验",
+      "case": "加密 PDF",
+      "ok": true,
+      "expected": "422/20006",
+      "actual": [
+        422,
+        20006,
+        "该 PDF 已加密，请先解除密码保护"
+      ],
+      "http": 422,
+      "note": ""
+    },
+    {
+      "section": "F1.1 上传校验",
+      "case": "页数 > 2000",
+      "ok": true,
+      "expected": "422/20007",
+      "actual": [
+        422,
+        20007,
+        "本书共 2001 页，超过 2000 页上限，暂不支持"
+      ],
+      "http": 422,
+      "note": ""
+    },
+    {
+      "section": "F1.1 正常上传",
+      "case": "合法 PDF 上传",
+      "ok": true,
+      "expected": "201 + book_id",
+      "actual": [
+        201,
+        0,
+        "BUILDING"
+      ],
+      "http": 201,
+      "note": ""
+    },
+    {
+      "section": "F1.1 正常上传",
+      "case": "上传即返回 QUEUED/BUILDING 且不阻塞",
+      "ok": true,
+      "expected": "UPLOADING/BUILDING",
+      "actual": "BUILDING",
+      "http": 201,
+      "note": "需求要求 QUEUED，实现用 UPLOADING/BUILDING"
+    },
+    {
+      "section": "F1.1 去重",
+      "case": "同名再传 → 409 提示已存在",
+      "ok": true,
+      "expected": "409/20003",
+      "actual": [
+        409,
+        20003,
+        "已存在同名书籍，是否继续上传？"
+      ],
+      "http": 409,
+      "note": "existing_book_id=book_b920d2622bb848719ae1c840b4b2a22b"
+    },
+    {
+      "section": "F1.1 去重",
+      "case": "confirm_duplicate=true → 允许并存",
+      "ok": true,
+      "expected": "201",
+      "actual": [
+        201,
+        0
+      ],
+      "http": 201,
+      "note": ""
+    },
+    {
+      "section": "F1.1 去重",
+      "case": "同名不同 hash 允许并存（新 book_id）",
+      "ok": true,
+      "expected": "不同 id",
+      "actual": "book_e7d4c47074b949bd9f7cbef438618232 vs book_b920d2622bb848719ae1c840b4b2a22b",
+      "http": null,
+      "note": ""
+    }
+  ]
+}

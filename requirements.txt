@@ -1,0 +1,10 @@
+# 阅读笔记系统 - Python 侧依赖（仅 Chroma 向量库，以 Server 模式运行）
+#
+# 版本必须为 1.x，两条硬约束：
+# 1. chromadb 1.x 的服务端只实现 v2 API，访问 /api/v1/* 统一返回
+#    410 {"error":"Unimplemented","message":"The v1 API is deprecated. Please use /v2 apis"}；
+#    而 0.5.x 的客户端又不认识 v2 路径，两者不可混用。
+# 2. 0.5.x 硬依赖 chroma-hnswlib==0.7.6（C++ 扩展），PyPI 上没有 cp313 预编译 wheel，
+#    Python 3.13 下必须从源码编译，需要 Microsoft Visual C++ 14.0。
+#    1.x 改用 Rust 核心，chroma-hnswlib 降为 dev extra，并提供 cp39-abi3 预编译 wheel。
+chromadb==1.5.9

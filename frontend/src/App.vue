@@ -1,3 +1,8 @@
+<!--
+  应用外壳：左侧固定导航 + 右侧路由视图。
+  导航顺序按功能模块排列（F1 书库 → F3 读书 → F4 笔记 → 评估 → F5 设置），
+  与需求文档的模块编号一致，方便对照验收。
+-->
 <template>
   <el-container class="layout">
     <el-aside width="216px" class="aside">

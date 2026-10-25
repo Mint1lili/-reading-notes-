@@ -1,0 +1,174 @@
+{
+  "cancel_book": "book_e8576cb28293422893490a6e263f5c0e",
+  "fail_book": "book_3747e7d18fd8418183a83642fab63091",
+  "deleted_book": "book_dfdcf6d86c824440bf7f39487f1ab4b7",
+  "results": [
+    {
+      "section": "F2.5 取消与续跑",
+      "case": "构建中取消返回成功",
+      "ok": true,
+      "expected": "200",
+      "actual": [
+        200,
+        0
+      ],
+      "http": 200,
+      "note": ""
+    },
+    {
+      "section": "F2.5 取消与续跑",
+      "case": "取消后状态为 CANCELLED",
+      "ok": true,
+      "expected": "CANCELLED",
+      "actual": [
+        "CANCELLED",
+        "progress=60"
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.5 取消与续跑",
+      "case": "已完成的批次被保留（断点>0 或为 0 但批次规划存在）",
+      "ok": true,
+      "expected": "total_batches 保留",
+      "actual": [
+        1,
+        2
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.5 取消与续跑",
+      "case": "CANCELLED 可重试",
+      "ok": false,
+      "expected": "202",
+      "actual": 409,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.5 取消与续跑",
+      "case": "重试后构建完成 READY",
+      "ok": true,
+      "expected": "READY",
+      "actual": [
+        "READY",
+        "1.5s",
+        28
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.5 取消与续跑",
+      "case": "续跑后无重复向量（计数==切片数）",
+      "ok": true,
+      "expected": "相等",
+      "actual": [
+        28,
+        28
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.5 失败与重试",
+      "case": "向量化服务不可用 → 构建失败可重试",
+      "ok": true,
+      "expected": "FAILED",
+      "actual": [
+        "FAILED",
+        "70003",
+        "豆包 API 不可用：injected failure (call 4)（失败批次 1 个，修复后点击重试续跑）"
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.5 失败与重试",
+      "case": "失败原因中文可读，不是裸堆栈",
+      "ok": true,
+      "expected": "中文原因",
+      "actual": "豆包 API 不可用：injected failure (call 4)（失败批次 1 个，修复后点击重试续跑）",
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.5 失败与重试",
+      "case": "失败批次被记录",
+      "ok": true,
+      "expected": ">0",
+      "actual": [
+        0
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.5 失败与重试",
+      "case": "FAILED 可重试",
+      "ok": true,
+      "expected": "202",
+      "actual": [
+        202,
+        0
+      ],
+      "http": 202,
+      "note": ""
+    },
+    {
+      "section": "F2.5 失败与重试",
+      "case": "修复后重试完成 READY",
+      "ok": true,
+      "expected": "READY",
+      "actual": [
+        "READY",
+        "1.5s"
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.5 失败与重试",
+      "case": "重试不重跑全部批次（只补失败批次）",
+      "ok": true,
+      "expected": "调用次数远小于全量",
+      "actual": "重试期间 embedding 调用 4 次，切片 28 片",
+      "http": null,
+      "note": "失败时已停在第 1 批，重试从断点续跑"
+    },
+    {
+      "section": "F1.4 构建中删除",
+      "case": "构建中删除可在 10s 内完成",
+      "ok": true,
+      "expected": "204 + DELETED ≤10s",
+      "actual": [
+        204,
+        "DELETED",
+        "0.0s"
+      ],
+      "http": 204,
+      "note": "删除前状态=BUILDING progress=60"
+    },
+    {
+      "section": "F1.4 构建中删除",
+      "case": "删除后向量集合已清除",
+      "ok": true,
+      "expected": "集合不存在",
+      "actual": null,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F1.4 构建中删除",
+      "case": "进入回收站且保留 7 天",
+      "ok": true,
+      "expected": "remaining≈168h",
+      "actual": 159,
+      "http": null,
+      "note": ""
+    }
+  ]
+}

@@ -1,7 +1,12 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getToken } from '../utils/token'
 
+/**
+ * 路由表：一级页面全部懒加载（首屏只加载 LibraryView），
+ * 页面名与左侧导航一一对应，F3/F4/F5 目前是占位页。
+ */
 const routes = [
+  // 根路径直接进书库
   { path: '/login', name: 'Login', component: () => import('../views/LoginView.vue'), meta: { public: true } },
   { path: '/', redirect: '/library' },
   { path: '/library', name: 'Library', component: () => import('../views/LibraryView.vue') },
