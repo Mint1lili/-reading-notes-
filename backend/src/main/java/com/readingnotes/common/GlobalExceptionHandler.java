@@ -7,8 +7,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -77,6 +79,22 @@ public class GlobalExceptionHandler {
                     .map(v -> v.getMessage()).orElse(msg);
         }
         log.warn("validation error msg={} trace={}", msg, TraceContext.current());
+        return ResponseEntity.badRequest().body(Result.fail(ErrorCode.PARAM_ERROR.getCode(), msg));
+    }
+
+    /**
+     * @RequestParam 必填缺失 / 参数类型不匹配 → 400 参数错误（10001）。
+     * 此前会落到兜底 500「服务内部错误」，误导前端把参数问题当成后端故障。
+     */
+    @ExceptionHandler({MissingServletRequestParameterException.class, MethodArgumentTypeMismatchException.class})
+    public ResponseEntity<Result<Void>> handleMissingParam(Exception e) {
+        String msg = "请求参数缺失或类型不匹配";
+        if (e instanceof MissingServletRequestParameterException ex) {
+            msg = "缺少必填参数：" + ex.getParameterName();
+        } else if (e instanceof MethodArgumentTypeMismatchException ex) {
+            msg = "参数类型不匹配：" + ex.getName();
+        }
+        log.warn("param error msg={} trace={}", msg, TraceContext.current());
         return ResponseEntity.badRequest().body(Result.fail(ErrorCode.PARAM_ERROR.getCode(), msg));
     }
 

@@ -216,12 +216,23 @@ public class ChromaClient {
             if (where != null && !where.isEmpty()) {
                 body.set("where", mapper.valueToTree(where));
             }
-            String cid = resolveOrThrow(collection);
+            // 集合不存在 = 该书/笔记从未入库向量（或已清理），等价于"知识库为空"，
+            // 不是服务故障：返回空检索结果，由上层走阈值兜底/拒答（40002），
+            // 而不是误报 70001「知识库服务未启动」。
+            String cid = resolveCollectionId(collection);
+            if (cid == null) {
+                log.warn("query returned empty, collection {} not found (knowledge base empty)", collection);
+                return List.of();
+            }
             HttpRequest req = post(collectionsPath + "/" + cid + "/query", body);
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 404) {
                 collectionIds.remove(collection);
-                cid = resolveOrThrow(collection);
+                cid = resolveCollectionId(collection);
+                if (cid == null) {
+                    log.warn("query returned empty, collection {} not found (knowledge base empty)", collection);
+                    return List.of();
+                }
                 resp = http.send(post(collectionsPath + "/" + cid + "/query", body), HttpResponse.BodyHandlers.ofString());
             }
             if (resp.statusCode() != 200) {
