@@ -8,13 +8,12 @@ import com.readingnotes.dto.RegisterRequestDTO;
 import com.readingnotes.dto.SetPasswordRequestDTO;
 import com.readingnotes.dto.TokenVO;
 import com.readingnotes.entity.User;
-import com.readingnotes.security.JwtUtils;
+import com.readingnotes.security.AuthContext;
 import com.readingnotes.service.AuthService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -38,11 +37,9 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
-    private final JwtUtils jwtUtils;
 
-    public AuthController(AuthService authService, JwtUtils jwtUtils) {
+    public AuthController(AuthService authService) {
         this.authService = authService;
-        this.jwtUtils = jwtUtils;
     }
 
     /** 发送邮箱验证码；请求体：{ "email": "xx@xx.com", "scene": "register" } */
@@ -80,18 +77,10 @@ public class AuthController {
         return Result.ok();
     }
 
-    /** 当前登录用户信息（脱敏，不含密码哈希） */
+    /** 当前登录用户信息（脱敏，不含密码哈希）；userId 由 AuthFilter 解析并写入 AuthContext */
     @GetMapping("/me")
-    public Result<User> me(@RequestHeader(value = "Authorization", required = false) String authorization) {
-        Long userId = resolveUserId(authorization);
+    public Result<User> me() {
+        Long userId = AuthContext.getUserId();
         return Result.ok(authService.getCurrentUser(userId));
-    }
-
-    /** 从 Authorization: Bearer <token> 中解析 userId */
-    private Long resolveUserId(String authorization) {
-        if (authorization == null || !authorization.startsWith("Bearer ")) {
-            return null;
-        }
-        return jwtUtils.getUserId(authorization.substring(7));
     }
 }
