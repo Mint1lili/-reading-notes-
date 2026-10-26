@@ -58,10 +58,9 @@ http.interceptors.response.use(
         window.location.href = '/login'
       }
     }
-    // 404（资源不存在）：静默 reject，由调用方按场景提示
+    // 404（资源不存在）：完全静默 reject，由调用方按场景提示
     // （如删除已进回收站的书 → 幂等视为成功，前端显示"该书已在回收站"）
     if (err.response?.status === 404) {
-      console.warn('[http] 404', err.config?.url)
       return Promise.reject(err)
     }
     // 传输层错误（网络断开、5xx 无信封、超时）
