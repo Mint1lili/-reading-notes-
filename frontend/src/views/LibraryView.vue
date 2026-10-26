@@ -789,7 +789,13 @@ async function confirmDelete () {
     ElMessage.success('已移入回收站')
     await load()
   } catch (e) {
-    // 已提示
+    if (e?.response?.status === 404) {
+      // 该书已在回收站（重复删除/回收站里再删）：后端幂等返回 404，视为已删除
+      delDialog.value = false
+      ElMessage.success('该书已在回收站')
+      await load()
+    }
+    // 其他错误已由 http 拦截器提示
   } finally {
     acting.value = false
   }
