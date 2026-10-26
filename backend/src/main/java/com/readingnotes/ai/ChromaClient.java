@@ -35,6 +35,11 @@ public class ChromaClient {
     private final HttpClient http;
     private final ObjectMapper mapper;
 
+    // Chroma 1.5.x 起使用 v2 API：集合按 UUID 定位
+    // tenant/database 使用默认值（与 `chroma run` 一致）
+    private static final String TENANT_DB_PREFIX =
+            "/api/v2/tenants/default_tenant/databases/default_database";
+
     public ChromaClient(ChromaProperties props) {
         this.props = props;
         this.http = HttpClient.newBuilder()
@@ -43,16 +48,44 @@ public class ChromaClient {
         this.mapper = new ObjectMapper();
     }
 
-    /** 健康检查：GET /api/v1/heartbeat */
+    /** 健康检查：GET /api/v2/heartbeat */
     public boolean isHealthy() {
         try {
             HttpResponse<String> resp = http.send(
-                    HttpRequest.newBuilder().uri(URI.create(props.getBaseUrl() + "/api/v1/heartbeat"))
+                    HttpRequest.newBuilder().uri(URI.create(props.getBaseUrl() + "/api/v2/heartbeat"))
                             .timeout(Duration.ofSeconds(3)).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             return resp.statusCode() == 200;
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    /**
+     * 按集合名解析集合 UUID（v2 API 集合操作以 id 定位）
+     * 返回 null 表示集合不存在
+     */
+    public String resolveCollectionId(String name) {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(props.getBaseUrl() + TENANT_DB_PREFIX + "/collections"))
+                    .timeout(Duration.ofSeconds(10))
+                    .GET().build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                log.error("list collections status={} body={}", resp.statusCode(), resp.body());
+                return null;
+            }
+            JsonNode arr = mapper.readTree(resp.body());
+            for (JsonNode c : arr) {
+                if (name.equals(c.path("name").asText())) {
+                    return c.path("id").asText();
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            log.error("resolve collection id failed name={}", name, e);
+            return null;
         }
     }
 
@@ -66,15 +99,17 @@ public class ChromaClient {
     public void createCollection(String name, int dim) {
         ensureHealthy();
         try {
+            if (resolveCollectionId(name) != null) {
+                log.info("collection already exists, skip: {}", name);
+                return;
+            }
             ObjectNode body = mapper.createObjectNode();
             body.put("name", name);
             ObjectNode meta = mapper.createObjectNode();
             meta.put("hnsw:space", "cosine");
-            meta.put("dimension", dim);
             body.set("metadata", meta);
-            HttpRequest req = post("/api/v1/collections", body);
+            HttpRequest req = post(TENANT_DB_PREFIX + "/collections", body);
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            // 已存在时返回 409 属正常，忽略
             if (resp.statusCode() != 200 && resp.statusCode() != 409) {
                 log.error("create collection {} status={} body={}", name, resp.statusCode(), resp.body());
                 throw new BusinessException(ErrorCode.CHROMA_DOWN);
@@ -100,12 +135,13 @@ public class ChromaClient {
                        List<Map<String, Object>> metadatas) {
         ensureHealthy();
         try {
+            String cid = requireCollectionId(collection);
             ObjectNode body = mapper.createObjectNode();
             body.put("ids", mapper.valueToTree(ids));
             body.set("embeddings", mapper.valueToTree(embeddings));
             body.set("documents", mapper.valueToTree(documents));
             body.set("metadatas", mapper.valueToTree(metadatas));
-            HttpRequest req = post("/api/v1/collections/" + encode(collection) + "/upsert", body);
+            HttpRequest req = post(TENANT_DB_PREFIX + "/collections/" + cid + "/upsert", body);
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() != 200) {
                 log.error("upsert failed collection={} status={} body={}", collection, resp.statusCode(), resp.body());
@@ -119,6 +155,16 @@ public class ChromaClient {
         }
     }
 
+    /** 集合必须存在，否则抛 CHROMA_DOWN（v2 按 UUID 定位） */
+    private String requireCollectionId(String name) {
+        String cid = resolveCollectionId(name);
+        if (cid == null) {
+            log.error("collection not found: {}", name);
+            throw new BusinessException(ErrorCode.CHROMA_DOWN);
+        }
+        return cid;
+    }
+
     /**
      * 向量检索（cosine）
      * queryEmbedding: 问题向量
@@ -130,14 +176,16 @@ public class ChromaClient {
                                  Map<String, Object> where, int nResults) {
         ensureHealthy();
         try {
+            String cid = requireCollectionId(collection);
             ObjectNode body = mapper.createObjectNode();
-            body.set("query_embeddings", mapper.createObjectNode().set("0", mapper.valueToTree(queryEmbedding)));
+            // v2 格式：query_embeddings 为二维数组
+            body.set("query_embeddings", mapper.createArrayNode().add(mapper.valueToTree(queryEmbedding)));
             body.put("n_results", nResults);
             body.put("include", mapper.valueToTree(List.of("documents", "metadatas", "distances")));
             if (where != null && !where.isEmpty()) {
                 body.set("where", mapper.valueToTree(where));
             }
-            HttpRequest req = post("/api/v1/collections/" + encode(collection) + "/query", body);
+            HttpRequest req = post(TENANT_DB_PREFIX + "/collections/" + cid + "/query", body);
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() != 200) {
                 log.error("query failed collection={} status={} body={}", collection, resp.statusCode(), resp.body());
@@ -157,9 +205,10 @@ public class ChromaClient {
     public void deleteByWhere(String collection, Map<String, Object> where) {
         ensureHealthy();
         try {
+            String cid = requireCollectionId(collection);
             ObjectNode body = mapper.createObjectNode();
             body.set("where", mapper.valueToTree(where));
-            HttpRequest req = post("/api/v1/collections/" + encode(collection) + "/delete", body);
+            HttpRequest req = post(TENANT_DB_PREFIX + "/collections/" + cid + "/delete", body);
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() != 200) {
                 log.error("delete failed collection={} status={} body={}", collection, resp.statusCode(), resp.body());
@@ -177,8 +226,12 @@ public class ChromaClient {
     public void deleteCollection(String name) {
         ensureHealthy();
         try {
+            String cid = resolveCollectionId(name);
+            if (cid == null) {
+                return;
+            }
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(props.getBaseUrl() + "/api/v1/collections/" + encode(name)))
+                    .uri(URI.create(props.getBaseUrl() + TENANT_DB_PREFIX + "/collections/" + cid))
                     .timeout(Duration.ofSeconds(10))
                     .DELETE().build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
@@ -218,10 +271,6 @@ public class ChromaClient {
                 .timeout(Duration.ofSeconds(30))
                 .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
                 .build();
-    }
-
-    private String encode(String name) {
-        return name.replace("/", "%2F");
     }
 
     /** 检索命中记录 */

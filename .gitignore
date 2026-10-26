@@ -20,3 +20,7 @@ backend/data/
 # 系统
 .DS_Store
 Thumbs.db
+
+# Chroma 本地数据 / OpenAPI 快照（勿提交）
+backend/chroma/
+backend/_openapi.json

@@ -15,8 +15,10 @@ public class CorsConfig {
     @Bean
     public CorsFilter corsFilter() {
         CorsConfiguration cfg = new CorsConfiguration();
+        // 本地开发放开跨域：Vite(5173) + 任意本地来源（含 file:// 测试页、其他前端端口）
         cfg.addAllowedOrigin("http://localhost:5173");
         cfg.addAllowedOrigin("http://127.0.0.1:5173");
+        cfg.addAllowedOriginPattern("*");
         cfg.addAllowedHeader("*");
         cfg.addAllowedMethod("*");
         cfg.setAllowCredentials(false);

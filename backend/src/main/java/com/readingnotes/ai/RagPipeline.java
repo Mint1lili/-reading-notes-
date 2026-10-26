@@ -25,12 +25,12 @@ import java.util.regex.Pattern;
 public class RagPipeline {
 
     private final ChromaClient chroma;
-    private final DoubaoClient doubao;
+    private final EmbeddingProvider embedding;
     private final RagProperties props;
 
-    public RagPipeline(ChromaClient chroma, DoubaoClient doubao, RagProperties props) {
+    public RagPipeline(ChromaClient chroma, EmbeddingProvider embedding, RagProperties props) {
         this.chroma = chroma;
-        this.doubao = doubao;
+        this.embedding = embedding;
         this.props = props;
     }
 
@@ -53,7 +53,7 @@ public class RagPipeline {
         }
 
         // ② 向量召回 Top-K
-        List<Float> qVec = doubao.embed(List.of(question)).get(0);
+        List<Float> qVec = embedding.embed(List.of(question)).get(0);
         List<ChromaClient.SearchHit> hits =
                 chroma.query(collection, qVec, where, props.getRecallTopK());
 
