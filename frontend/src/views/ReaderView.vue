@@ -48,7 +48,7 @@
           <div class="msg-content">
             <div v-if="m.role === 'ai' && m.streaming" class="bubble ai">{{ streamingText }}<span class="cursor">▍</span></div>
             <div v-else-if="m.role === 'ai' && m.markdown" class="bubble ai md"><pre class="mm">{{ m.content }}</pre></div>
-            <div v-else-if="m.role === 'ai'" class="bubble ai" v-html="m.content"></div>
+            <div v-else-if="m.role === 'ai'" class="bubble ai" v-html="renderText(m.content)"></div>
             <div v-else class="bubble user">{{ m.content }}</div>
 
             <!-- 引用胶囊 -->
@@ -145,6 +145,12 @@ const activeCitations = ref([])
 const sessionIdMap = reactive({})
 
 const coverColors = ['#14532d', '#2f855a', '#5b8c6a', '#86b59b', '#3e6b4f', '#1f7a54']
+
+// ---- 渲染安全：AI 回答按纯文本渲染，先转义再换行，杜绝 XSS ----
+const escHtml = (s) => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+const renderText = (s) => escHtml(s).replace(/\n/g, '<br/>')
 function coverColor(title) {
   let h = 0
   for (const ch of (title || '书')) h = (h * 31 + ch.charCodeAt(0)) % 997
