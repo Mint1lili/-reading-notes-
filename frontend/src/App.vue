@@ -5,7 +5,7 @@
 -->
 <template>
   <el-container class="layout">
-    <el-aside width="216px" class="aside">
+    <el-aside v-if="!isLogin" width="216px" class="aside">
       <div class="brand">
         <div class="brand-mark">智</div>
         <div class="brand-text">
@@ -41,7 +41,7 @@
       </div>
     </el-aside>
 
-    <el-main class="main">
+    <el-main :class="{ 'main--bare': isLogin }" class="main">
       <router-view />
     </el-main>
   </el-container>
@@ -49,12 +49,14 @@
 
 <script setup>
 import { computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Collection, Reading, Notebook, TrendCharts, Setting } from '@element-plus/icons-vue'
 import { getStoredUser, clearAuth } from './utils/token'
 
 const router = useRouter()
+const route = useRoute()
+const isLogin = computed(() => route.path === '/login')
 const user = computed(() => getStoredUser())
 const avatarChar = computed(() => {
   const email = user.value?.email || ''
@@ -129,5 +131,10 @@ body { font-family: -apple-system, 'Microsoft YaHei', 'PingFang SC', sans-serif;
   background: #f6f8f7;
   padding: 20px 24px;
   overflow-y: auto;
+}
+
+/* 登录页全屏（不套侧边栏布局） */
+.main--bare {
+  padding: 0;
 }
 </style>
