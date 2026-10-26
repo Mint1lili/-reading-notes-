@@ -32,8 +32,16 @@ import java.nio.charset.StandardCharsets;
 public class AuthFilter extends OncePerRequestFilter {
 
     private static final String BEARER_PREFIX = "Bearer ";
+    /**
+     * 白名单：仅未登录也能访问的接口（发送验证码/登录/注册/设置密码/健康检查）。
+     * 注意：/api/v1/auth/me 不在此列——me 需要登录态，必须经过 Filter 校验并写入 AuthContext，
+     * 若按旧前缀 /api/v1/auth 整体放行会导致 me 永远拿不到 userId 而 401。
+     */
     private static final String[] WHITELIST_PREFIXES = {
-            "/api/v1/auth",
+            "/api/v1/auth/captcha",
+            "/api/v1/auth/login",
+            "/api/v1/auth/register",
+            "/api/v1/auth/password",
             "/api/v1/health"
     };
 
