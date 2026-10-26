@@ -29,4 +29,7 @@ public class AppProperties {
 
     /** Prompt 模板与版本快照目录 */
     private String promptsDir;
+
+    /** Chroma 向量数据目录（可选，embedded 模式下才需要；server 模式留空则跳过） */
+    private String chromaDir;
 }

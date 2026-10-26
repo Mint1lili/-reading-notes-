@@ -1,5 +1,6 @@
 package com.readingnotes.common;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 /**
@@ -23,6 +24,7 @@ public class Result<T> {
     private T data;
 
     /** 全链路追踪 id，与响应头 X-Trace-Id 一致，便于用户报错时定位日志 */
+    @JsonProperty("trace_id")
     private String traceId;
 
     /**
@@ -46,6 +48,18 @@ public class Result<T> {
     }
 
     /**
+     * 成功响应 + 自定义 message（少数需要告诉前端"接下来会重启"之类的场景）。
+     */
+    public static <T> Result<T> ok(T data, String message) {
+        Result<T> r = new Result<>();
+        r.code = 0;
+        r.message = message;
+        r.data = data;
+        r.traceId = TraceContext.current();
+        return r;
+    }
+
+    /**
      * 失败响应，trace_id 取当前上下文。
      *
      * @param code    业务错误码
@@ -66,6 +80,7 @@ public class Result<T> {
      * @param message 用户可见文案
      * @param traceId 原始请求的 trace_id，保证前后端可对齐
      */
+    @SuppressWarnings("unused")
     public static <T> Result<T> fail(int code, String message, String traceId) {
         Result<T> r = new Result<>();
         r.code = code;
