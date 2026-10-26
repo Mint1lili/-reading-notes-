@@ -385,6 +385,7 @@ public class ChromaClient {
         } catch (Exception e) {
             log.error("get failed collection={}", collection, e);
             throw new BusinessException(ErrorCode.CHROMA_DOWN);
+        }
     }
 
     /**
