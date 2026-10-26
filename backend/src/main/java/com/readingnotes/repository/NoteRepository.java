@@ -95,17 +95,30 @@ public class NoteRepository {
     }
 
     /**
+     * 原始详情（含软删记录）：不存在返回 null。
+     * 供恢复/永久删除判断"不存在"与"已软删"（阶段 5 回流联动）。
+     */
+    public Note findRawById(String noteId) {
+        List<Note> list = jdbc.query(
+                "SELECT * FROM notes WHERE note_id = ?", MAPPER, noteId);
+        return list.isEmpty() ? null : list.get(0);
+    }
+
+    /**
      * 笔记列表（分页 + 可选过滤），仅未软删，按创建时间倒序。
      *
      * @param sourceBookId 按来源书过滤（可空）
      * @param sourceType   按来源类型过滤（可空）
      * @param keyword      标题/正文模糊搜索（可空）
      * @param tagName      按标签名过滤（可空，阶段 2：join note_tag_map）
+     * @param indexed      按回流状态过滤（可空：true=已回流 is_indexed=1，false=未回流）
      */
     public List<Note> list(String sourceBookId, String sourceType, String keyword,
-                           String tagName, int page, int pageSize) {
-        StringBuilder sql = new StringBuilder("SELECT * FROM notes WHERE soft_delete = 0");
+                           String tagName, Boolean indexed, boolean softDeleted,
+                           int page, int pageSize) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM notes WHERE soft_delete = ?");
         java.util.List<Object> args = new java.util.ArrayList<>();
+        args.add(softDeleted ? 1 : 0);
         if (sourceBookId != null && !sourceBookId.isBlank()) {
             sql.append(" AND source_book_id = ?");
             args.add(sourceBookId);
@@ -123,6 +136,10 @@ public class NoteRepository {
             sql.append(" AND note_id IN (SELECT m.note_id FROM note_tag_map m"
                     + " JOIN tags t ON m.tag_id = t.tag_id WHERE t.name = ?)");
             args.add(tagName);
+        }
+        if (indexed != null) {
+            sql.append(" AND is_indexed = ?");
+            args.add(indexed ? 1 : 0);
         }
         sql.append(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
         args.add(pageSize);
@@ -131,9 +148,11 @@ public class NoteRepository {
     }
 
     /** 计数（与 list 同一套过滤条件，供分页返回 total） */
-    public long count(String sourceBookId, String sourceType, String keyword, String tagName) {
-        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM notes WHERE soft_delete = 0");
+    public long count(String sourceBookId, String sourceType, String keyword,
+                      String tagName, Boolean indexed, boolean softDeleted) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM notes WHERE soft_delete = ?");
         java.util.List<Object> args = new java.util.ArrayList<>();
+        args.add(softDeleted ? 1 : 0);
         if (sourceBookId != null && !sourceBookId.isBlank()) {
             sql.append(" AND source_book_id = ?");
             args.add(sourceBookId);
@@ -152,8 +171,23 @@ public class NoteRepository {
                     + " JOIN tags t ON m.tag_id = t.tag_id WHERE t.name = ?)");
             args.add(tagName);
         }
+        if (indexed != null) {
+            sql.append(" AND is_indexed = ?");
+            args.add(indexed ? 1 : 0);
+        }
         Long c = jdbc.queryForObject(sql.toString(), Long.class, args.toArray());
         return c == null ? 0 : c;
+    }
+
+    /**
+     * 按来源书查全部未软删笔记（导出 scope=book 用，API §9.11）
+     * 按创建时间升序，便于导出后按阅读顺序阅读。
+     */
+    public List<Note> findByBookId(String bookId) {
+        return jdbc.query(
+                "SELECT * FROM notes WHERE source_book_id = ? AND soft_delete = 0"
+                        + " ORDER BY source_page ASC, created_at ASC",
+                MAPPER, bookId);
     }
 
     /** 记录是否存在（含软删，用于区分"不存在"与"版本冲突"） */
@@ -185,7 +219,39 @@ public class NoteRepository {
         return titles.isEmpty() ? null : titles.get(0);
     }
 
+    /**
+     * 批量来源书标题（列表响应用，避免 N+1；bookId → title，书不存在/已删/空入参无条目）
+     * 保留单个 IN 查询；空集合直接返回空 Map，不拼非法 SQL。
+     */
+    public java.util.Map<String, String> sourceBookTitles(java.util.Collection<String> bookIds) {
+        java.util.Map<String, String> map = new java.util.HashMap<>();
+        if (bookIds == null || bookIds.isEmpty()) {
+            return map;
+        }
+        String in = String.join(",", java.util.Collections.nCopies(bookIds.size(), "?"));
+        jdbc.query("SELECT book_id, title FROM books WHERE book_id IN (" + in + ") AND soft_delete = 0",
+                rs -> {
+                    map.put(rs.getString(1), rs.getString(2));
+                }, bookIds.toArray());
+        return map;
+    }
+
     // ==================== 编辑（乐观锁） ====================
+
+    /**
+     * 回流状态落库（阶段 5）：更新 is_indexed / index_status / last_index_version。
+     * last_index_version 用 COALESCE：传 null 时保留原值（软删/关闭回流时保留"曾回流"痕迹，
+     * 恢复时凭此判断是否重新入库）；传新值时覆盖。
+     */
+    public void updateIndexState(String noteId, int isIndexed, String indexStatus,
+                                 String lastIndexVersion) {
+        jdbc.update("""
+                UPDATE notes
+                   SET is_indexed = ?, index_status = ?,
+                       last_index_version = COALESCE(?, last_index_version), updated_at = ?
+                 WHERE note_id = ?
+                """, isIndexed, indexStatus, lastIndexVersion, nowIso(), noteId);
+    }
 
     /**
      * 编辑笔记：WHERE 带 editor_version 实现乐观锁，仅当版本匹配才更新并把版本 +1。

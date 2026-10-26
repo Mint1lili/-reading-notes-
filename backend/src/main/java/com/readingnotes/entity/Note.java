@@ -1,6 +1,8 @@
 package com.readingnotes.entity;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import lombok.Data;
 
 import java.util.List;
@@ -12,8 +14,12 @@ import java.util.List;
  * word_count/editor_version/soft_delete/deleted_at/created_at/updated_at；
  * 回流相关字段（source_book_id/source_chunk_id/source_ai_version_id/
  * is_indexed/index_status/last_index_version）由阶段 5（AI 回流）写入。</p>
+ *
+ * <p>序列化统一 snake_case（对齐 API 文档 §9 与前端读取约定；
+ * 手工 Map 响应如导出/回流开关本来就是 snake）。</p>
  */
 @Data
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public class Note {
 
     /** 主键，格式：note_ + 时间戳 + 随机后缀（文档示例 note_2026xxx） */

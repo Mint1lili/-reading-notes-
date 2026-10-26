@@ -1,0 +1,362 @@
+{
+  "book_id": "book_f074d696f1044fe5ae24d1dd7d783aba",
+  "plain_id": "book_8f94a1e728e2458281bf1cb56ce18b80",
+  "results": [
+    {
+      "section": "F2 全流程",
+      "case": "上传后自动构建到 READY",
+      "ok": true,
+      "expected": "READY",
+      "actual": [
+        "READY",
+        "1.5s",
+        28,
+        2
+      ],
+      "http": 201,
+      "note": ""
+    },
+    {
+      "section": "F2 全流程",
+      "case": "构建耗时符合 <5min",
+      "ok": true,
+      "expected": "<300s",
+      "actual": "1.5s",
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.4 切片预览",
+      "case": "三档切片数单调递增（粗<中<细）",
+      "ok": true,
+      "expected": "递增",
+      "actual": [
+        16,
+        28,
+        64
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.4 切片预览",
+      "case": "p50 落在目标值 ±20% 附近",
+      "ok": false,
+      "expected": "±20%",
+      "actual": [
+        [
+          1295,
+          29.5
+        ],
+        [
+          770,
+          28.3
+        ],
+        [
+          358,
+          19.3
+        ]
+      ],
+      "http": null,
+      "note": "实测均偏高 13%~30%，长段落聚合后成片明显超过 target"
+    },
+    {
+      "section": "F2.4 切片预览",
+      "case": "第二次预览命中解析缓存",
+      "ok": true,
+      "expected": "cached=true",
+      "actual": true,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.4 切片预览",
+      "case": "预览返回 5 条抽样",
+      "ok": true,
+      "expected": "5",
+      "actual": 5,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.4 切片预览",
+      "case": "预览含章节树与覆盖率",
+      "ok": true,
+      "expected": "detected=true",
+      "actual": 0.92,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.4 切片预览",
+      "case": "切粒度重切耗时可接受（<1s）",
+      "ok": true,
+      "expected": "<1000ms",
+      "actual": "1ms",
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.4 切片预览",
+      "case": "预览未落库（dry_run）",
+      "ok": true,
+      "expected": "dry_run=true",
+      "actual": true,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.2 章节识别",
+      "case": "识别到多层级章节（max_level≥2）",
+      "ok": false,
+      "expected": "max_level≥2",
+      "actual": {
+        "max_level": 1,
+        "title_count": 7
+      },
+      "http": null,
+      "note": "实测全部为 level 1：'第X章' 标题被下方正文启发式误杀"
+    },
+    {
+      "section": "F2.2 章节识别",
+      "case": "章标题（第1章…）被识别",
+      "ok": false,
+      "expected": "命中第1章",
+      "actual": [
+        "1.1 主动建构",
+        "1.2 图式与迁移",
+        "2.1 主动建构",
+        "2.2 图式与迁移",
+        "2.3 摘录的局限",
+        "3.1 主动建构",
+        "3.2 图式与迁移"
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.2 章节识别",
+      "case": "章节编号层级正确（章→节）",
+      "ok": false,
+      "expected": "节为 x.y",
+      "actual": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7"
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.2 章节识别",
+      "case": "覆盖率 > 0.5 且给出结构",
+      "ok": true,
+      "expected": ">0.5",
+      "actual": 0.92,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.1 解析与噪声",
+      "case": "目录页已被剔除（不进切片）",
+      "ok": false,
+      "expected": "0 条含目录",
+      "actual": "1 条切片含目录/引导点",
+      "http": null,
+      "note": "首个切片包含封面+目录全文：阅读的方法\n从摘录到知识网络\n测试作者 著\n目 录\n第1章 阅读的认知基础 ................................"
+    },
+    {
+      "section": "F2.1 解析与噪声",
+      "case": "页眉已剔除",
+      "ok": true,
+      "expected": "无页眉文本",
+      "actual": "0 条切片含页眉",
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.1 解析与噪声",
+      "case": "页码行已剔除",
+      "ok": true,
+      "expected": "0 条",
+      "actual": 0,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.3 切片",
+      "case": "相邻切片存在 60~100 字重叠",
+      "ok": false,
+      "expected": "全部 60~100",
+      "actual": [
+        66,
+        64,
+        0,
+        59,
+        69,
+        0,
+        64,
+        79
+      ],
+      "http": null,
+      "note": "段落聚合边界处重叠为 0（仅在超长段落的滑窗内做重叠）"
+    },
+    {
+      "section": "F2.3 切片",
+      "case": "重叠只在本章节内（不跨章）",
+      "ok": false,
+      "expected": "绝不跨章",
+      "actual": "实现明确按跨章节累积聚合",
+      "http": null,
+      "note": "SemanticChunker 注释：跨章节边界继续累积"
+    },
+    {
+      "section": "F2.3 切片",
+      "case": "切片均带 chapter_path",
+      "ok": false,
+      "expected": "全部非空",
+      "actual": "3/28 为空",
+      "http": null,
+      "note": "封面/目录切片 chapter_path 为空"
+    },
+    {
+      "section": "F2.3 切片",
+      "case": "chunk_id 唯一且稳定",
+      "ok": true,
+      "expected": "唯一",
+      "actual": 28,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.3 切片",
+      "case": "切片带起始页码",
+      "ok": true,
+      "expected": "1..35",
+      "actual": [
+        1,
+        34
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.6 向量入库",
+      "case": "Chroma 集合计数 == 切片数",
+      "ok": true,
+      "expected": "相等",
+      "actual": [
+        28,
+        28
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.6 向量入库",
+      "case": "READY 由集合校验通过后置位",
+      "ok": true,
+      "expected": "READY + 计数一致",
+      "actual": "READY",
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.6 向量入库",
+      "case": "构建进度 100%",
+      "ok": true,
+      "expected": "100",
+      "actual": 100,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.7 重建",
+      "case": "rebuild 接受改粒度请求",
+      "ok": true,
+      "expected": "202",
+      "actual": 202,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.7 重建",
+      "case": "改细粒度重建后切片数增加",
+      "ok": true,
+      "expected": ">28",
+      "actual": [
+        65,
+        "1.5s"
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.7 重建",
+      "case": "重建后集合计数与切片数一致",
+      "ok": true,
+      "expected": "相等",
+      "actual": [
+        65,
+        65
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.7 重建",
+      "case": "重建走版本指针原子切换（book_{id}_v{n}）",
+      "ok": false,
+      "expected": "存在 _v{n} 集合",
+      "actual": [
+        "book_book_f074d696f1044fe5ae24d1dd7d783aba"
+      ],
+      "http": null,
+      "note": "实现直接删旧建新，重建期间集合为空窗"
+    },
+    {
+      "section": "F2.1/F2.2 无章节降级",
+      "case": "无结构书仍可构建 READY",
+      "ok": true,
+      "expected": "READY",
+      "actual": "READY",
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.1/F2.2 无章节降级",
+      "case": "降级提示 coverage<0.5 时给出警告",
+      "ok": true,
+      "expected": "含降级警告",
+      "actual": [
+        "本书未识别到完整章节结构（覆盖率 0%），问答将使用纯向量检索"
+      ],
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.1/F2.2 无章节降级",
+      "case": "无结构时 chapter_path 置空",
+      "ok": true,
+      "expected": "全部为空",
+      "actual": 0,
+      "http": null,
+      "note": ""
+    },
+    {
+      "section": "F2.1/F2.2 无章节降级",
+      "case": "chapters 接口有兜底章节",
+      "ok": true,
+      "expected": "≥1",
+      "actual": [
+        "（未识别到章节结构）"
+      ],
+      "http": 200,
+      "note": ""
+    }
+  ]
+}

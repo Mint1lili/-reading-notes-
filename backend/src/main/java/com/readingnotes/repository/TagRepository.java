@@ -127,4 +127,12 @@ public class TagRepository {
                 "INSERT IGNORE INTO note_tag_map (note_id, tag_id, created_at) VALUES (?, ?, ?)",
                 noteId, tagId, NoteRepository.nowIso());
     }
+
+    /**
+     * 解绑某笔记的全部标签（编辑笔记时 tag_names 全量覆盖的前置步骤）。
+     * 只删映射关系，tags 字典保留（其他笔记可能仍在使用）。
+     */
+    public void clearTags(String noteId) {
+        jdbc.update("DELETE FROM note_tag_map WHERE note_id = ?", noteId);
+    }
 }

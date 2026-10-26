@@ -2,6 +2,7 @@ package com.readingnotes.ai;
 
 import com.readingnotes.common.BusinessException;
 import com.readingnotes.common.ErrorCode;
+import com.readingnotes.common.TraceContext;
 import com.readingnotes.config.RagProperties;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
@@ -14,11 +15,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 三阶段检索流水线（需求 §4.2）
- * ① 查询理解 → ② 向量召回（可加章节/页码元数据过滤）→ ③ 阈值兜底拒答
- * Rerank 阶段由子类/后续实现接入（默认跳过即用召回序）。
- *
- * 比赛亮点：三层 RAG 兜底架构（创新点一），阈值滑块现场演示拒答效果。
+ * 三阶段检索流水线（需求 §4.2）：① 查询理解 → ② 向量召回（可加章节/页码元数据过滤）→ ③ 阈值兜底拒答。
+ * <p>
+ * Rerank 阶段当前只做截断（取召回序的前 N 条），真正的重排模型待 F3 接入；
+ * 阈值兜底是三段式防幻觉的最后一层：Top-1 相似度不足时直接返回 40002，不让模型自由发挥。
+ * <p>
+ * <b>接线状态</b>：本类尚未被任何 Controller 引用，属于 F3 问答的预留实现；
+ * 改签名前请先确认 F3 是否已接入，避免影响并行开发。
  */
 @Slf4j
 @Component
@@ -61,7 +64,7 @@ public class RagPipeline {
         double top1 = hits.isEmpty() ? 0.0 : cosineFromDistance(hits.get(0).getDistance());
         if (top1 < props.getSimilarityThreshold()) {
             log.info("below threshold top1={} threshold={} question={} trace={}",
-                    top1, props.getSimilarityThreshold(), question, com.readingnotes.common.TraceContext.current());
+                    top1, props.getSimilarityThreshold(), question, TraceContext.current());
             return new RetrieveResult(true, List.of(), where);
         }
 
@@ -99,6 +102,7 @@ public class RagPipeline {
         return new BusinessException(ErrorCode.NOT_MENTIONED);
     }
 
+    /** 检索结果：refused=true 时 hits 必为空，调用方应直接回 40002 而不是继续拼 prompt */
     @Data
     public static class RetrieveResult {
         /** true = 应拒答（相似度低于阈值） */

@@ -1,5 +1,7 @@
 package com.readingnotes.entity;
 
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import lombok.Data;
 
 /**
@@ -8,8 +10,11 @@ import lombok.Data;
  * <p>一条记录表示 source 笔记指向 target 笔记的单向引用；查询时按视角拆分为
  * outgoing（source=当前笔记）与 incoming（target=当前笔记），实现"双向"。
  * targetTitle/sourceTitle 非表列，为查询时 join notes 填充的展示字段。</p>
+ *
+ * <p>序列化统一 snake_case（对齐 API 文档 §9.10 与前端读取约定）。</p>
  */
 @Data
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public class NoteLink {
 
     /** 主键，格式：link_ + 时间戳 + 随机后缀 */

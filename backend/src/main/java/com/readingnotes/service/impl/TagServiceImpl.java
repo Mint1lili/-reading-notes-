@@ -84,6 +84,17 @@ public class TagServiceImpl implements TagService {
         }
     }
 
+    // ==================== 覆盖（编辑笔记时 tag_names 全量替换） ====================
+
+    @Override
+    public void replaceTags(String noteId, List<String> tagNames) {
+        // 清空旧映射（tagNames 为空即表示清空该笔记标签）
+        tagRepository.clearTags(noteId);
+        bindTags(noteId, tagNames);
+        log.info("note tags replaced: note={}, count={}", noteId,
+                tagNames == null ? 0 : tagNames.size());
+    }
+
     // ==================== 工具 ====================
 
     /** 生成唯一 tag_id：tag_ + UUID 短片段（避免同毫秒随机数撞 id） */

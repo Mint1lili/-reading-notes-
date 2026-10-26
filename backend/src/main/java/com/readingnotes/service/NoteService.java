@@ -13,12 +13,20 @@ public interface NoteService {
     /** 新建笔记，返回已落库的完整实体（含生成的 note_id/时间/版本号） */
     Note create(Note note);
 
-    /** 笔记列表（分页 + 可选过滤；tagName 按标签名过滤，阶段 2） */
+    /**
+     * 笔记列表（分页 + 可选过滤）
+     *
+     * @param tagName 按标签名过滤，阶段 2
+     * @param indexed 按回流状态过滤（可空；true=已回流，false=未回流），API 文档 §9.2
+     * @param softDeleted true=查回收站（soft_delete=1），false=查正常笔记（默认）
+     */
     List<Note> list(String sourceBookId, String sourceType, String keyword,
-                    String tagName, int page, int pageSize);
+                    String tagName, Boolean indexed, boolean softDeleted,
+                    int page, int pageSize);
 
     /** 笔记总数（与 list 同过滤条件） */
-    long count(String sourceBookId, String sourceType, String keyword, String tagName);
+    long count(String sourceBookId, String sourceType, String keyword,
+               String tagName, Boolean indexed, boolean softDeleted);
 
     /** 笔记详情（未软删；不存在抛 50001） */
     Note detail(String noteId);
