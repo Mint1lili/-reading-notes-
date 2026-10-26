@@ -1,8 +1,10 @@
 package com.readingnotes.controller;
 
 import com.readingnotes.ai.CrossQaService;
+import com.readingnotes.ai.NoteQaService;
 import com.readingnotes.ai.QaService;
 import com.readingnotes.ai.dto.CrossQaStreamRequest;
+import com.readingnotes.ai.dto.NoteQaStreamRequest;
 import com.readingnotes.ai.dto.QaStreamRequest;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
@@ -19,6 +21,7 @@ import java.io.IOException;
  * AI 交互接口（API 文档 §7）
  * F3.2 书本内问答 SSE 流式：POST /api/v1/ai/qa/stream
  * F3.3 跨书问答 SSE 流式：POST /api/v1/ai/qa/cross/stream
+ * F3.4 笔记问答 SSE 流式：POST /api/v1/ai/qa/note/stream
  */
 @Slf4j
 @RestController
@@ -27,10 +30,12 @@ public class AiQaController {
 
     private final QaService qaService;
     private final CrossQaService crossQaService;
+    private final NoteQaService noteQaService;
 
-    public AiQaController(QaService qaService, CrossQaService crossQaService) {
+    public AiQaController(QaService qaService, CrossQaService crossQaService, NoteQaService noteQaService) {
         this.qaService = qaService;
         this.crossQaService = crossQaService;
+        this.noteQaService = noteQaService;
     }
 
     /**
@@ -68,6 +73,25 @@ public class AiQaController {
             return emitter;
         }
         crossQaService.streamCrossAnswer(req, emitter);
+        return emitter;
+    }
+
+    /**
+     * 基于笔记问答（SSE 流式，API 文档 §7.6）
+     * scope：book_only / notes_only / book_and_notes（默认）
+     * 事件流：meta → citation* → delta* → done/error
+     */
+    @PostMapping(value = "/qa/note/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter noteStream(@Valid @RequestBody NoteQaStreamRequest req) {
+        SseEmitter emitter = new SseEmitter(120_000L);
+        try {
+            emitter.send(SseEmitter.event().comment("connected"));
+        } catch (IOException e) {
+            log.warn("send connected comment failed, session may be closed");
+            emitter.complete();
+            return emitter;
+        }
+        noteQaService.streamNoteAnswer(req, emitter);
         return emitter;
     }
 }
