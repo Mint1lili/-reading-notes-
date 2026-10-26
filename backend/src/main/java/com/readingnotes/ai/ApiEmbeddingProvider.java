@@ -2,6 +2,7 @@ package com.readingnotes.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.readingnotes.common.BusinessException;
 import com.readingnotes.common.ErrorCode;
 import lombok.extern.slf4j.Slf4j;
@@ -40,16 +41,20 @@ public class ApiEmbeddingProvider implements EmbeddingProvider {
     private final String apiKey;
     private final String model;
     private final int dim;
+    /** 查询侧检索指令（仅 multimodal 端点发送；与入库侧 corpus 指令配套，提升文本检索精度） */
+    private final String instructions;
 
     public ApiEmbeddingProvider(
             @Value("${ai.embedding.api-base-url:https://open.bigmodel.cn/api/paas/v4}") String baseUrl,
             @Value("${ai.embedding.api-key:}") String apiKey,
             @Value("${ai.embedding.api-model:embedding-3}") String model,
-            @Value("${ai.embedding.api-dim:2048}") int dim) {
+            @Value("${ai.embedding.api-dim:2048}") int dim,
+            @Value("${ai.embedding.instructions:}") String instructions) {
         this.baseUrl = baseUrl;
         this.apiKey = apiKey;
         this.model = model;
         this.dim = dim;
+        this.instructions = instructions;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -77,6 +82,11 @@ public class ApiEmbeddingProvider implements EmbeddingProvider {
                     .put("model", model)
                     .put("dimensions", dim)
                     .set("input", input));
+            if (multimodal && instructions != null && !instructions.isBlank()) {
+                // 查询侧检索指令：仅 multimodal 端点支持（智谱 text 端点不发送）
+                body = mapper.writeValueAsString(((ObjectNode) mapper.readTree(body))
+                        .put("instructions", instructions));
+            }
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
