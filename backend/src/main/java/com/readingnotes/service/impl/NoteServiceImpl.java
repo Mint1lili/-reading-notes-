@@ -46,6 +46,7 @@ public class NoteServiceImpl implements NoteService {
         if (note.getContent() == null || note.getContent().isBlank()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "笔记正文不能为空");
         }
+        assertLengths(note.getTitle(), note.getContent());
         // 来源类型缺省 MANUAL（手动笔记）；AI 来源由阶段 5 回流接口写入
         String sourceType = (note.getSourceType() == null || note.getSourceType().isBlank())
                 ? "MANUAL" : note.getSourceType();
@@ -124,6 +125,7 @@ public class NoteServiceImpl implements NoteService {
         if (content == null || content.isBlank()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "笔记正文不能为空");
         }
+        assertLengths(title, content);
         Note before = noteRepository.findById(noteId);
         // 先查拦截：repo 查不到（不存在或已软删）返回 null，不能带着 null 走向量同步
         if (before == null) {
@@ -213,6 +215,24 @@ public class NoteServiceImpl implements NoteService {
     }
 
     // ==================== 工具 ====================
+
+    /** 标题最大长度（列 varchar(512)，预留业务冗余） */
+    private static final int TITLE_MAX = 200;
+    /**
+     * 正文最大长度：MySQL TEXT 上限 65535 字节，中文 UTF-8 最多 3 字节/字符，
+     * 保守限制 20000 字符（≤60KB），超长直接 500 会让用户无从理解，这里业务拦截。
+     */
+    private static final int CONTENT_MAX = 20000;
+
+    /** 标题/正文长度校验：超长给明确业务错误而非 DB 500 兜底 */
+    private static void assertLengths(String title, String content) {
+        if (title != null && title.length() > TITLE_MAX) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "标题过长，最多 " + TITLE_MAX + " 字");
+        }
+        if (content != null && content.length() > CONTENT_MAX) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "笔记正文过长，请精简（最多 " + CONTENT_MAX + " 字）");
+        }
+    }
 
     /** 字数统计：去掉全部空白后的字符数（中文按字计，与文档示例口径一致） */
     private static int countWords(String content) {
