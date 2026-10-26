@@ -258,3 +258,106 @@ export const createTag = (payload) => http.post('/tags', payload)
 // 设置（F5）
 // =============================================================================
 // export const getRagSettings = () => http.get('/settings/rag')
+
+// =============================================================================
+// F3 AI 读书扩展（组员 feat/ai-core：SSE 流式问答 / 摘要 / 思维导图 / 任务轮询）
+// =============================================================================
+import { getToken } from '../utils/token'
+
+/**
+ * SSE 流式问答通用消费（原生 fetch，不走 axios）：
+ * POST /api/v1/ai/qa/stream（也可用 path 指定 /qa/cross/stream、/qa/note/stream）
+ * 事件：meta → delta* → done/error（:connected/:ping 为注释行，忽略）
+ * 返回 { task, done }：task.cancel() 可中断；done 为 Promise（解析为最后的完整事件对象）。
+ */
+export function aiQaStream(payload, handlers = {}, extra = {}) {
+  const { onMeta, onDelta, onDone, onError, onOpen } = handlers
+  const controller = new AbortController()
+  const path = extra.path || '/qa/stream'
+  const done = new Promise((resolve, reject) => {
+    ;(async () => {
+      try {
+        const res = await fetch('/api/v1/ai' + path, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${getToken()}`
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        })
+        if (!res.ok || !res.body) {
+          const err = await res.json().catch(() => ({}))
+          reject(new Error(err.message || `HTTP ${res.status}`))
+          return
+        }
+        onOpen && onOpen()
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder('utf-8')
+        let buf = ''
+        const result = { meta: null, deltas: [], done: null, error: null }
+        for (;;) {
+          const { done: rd, value } = await reader.read()
+          if (rd) break
+          buf += decoder.decode(value, { stream: true })
+          // SSE 事件以空行分隔
+          const blocks = buf.split(/\r?\n\r?\n/)
+          buf = blocks.pop()
+          for (const blk of blocks) {
+            const lines = blk.split(/\r?\n/)
+            let event = 'message'
+            for (const ln of lines) {
+              if (ln.startsWith('event:')) event = ln.slice(6).trim()
+            }
+            const dataLines = lines.filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('\n')
+            if (!dataLines) continue
+            let obj
+            try { obj = JSON.parse(dataLines) } catch { continue }
+            if (event === 'meta') { result.meta = obj; onMeta && onMeta(obj) }
+            else if (event === 'delta') { result.deltas.push(obj); onDelta && onDelta(obj) }
+            else if (event === 'done') { result.done = obj; onDone && onDone(obj) }
+            else if (event === 'error') { result.error = obj; onError && onError(obj) }
+          }
+        }
+        resolve(result)
+      } catch (e) {
+        if (e.name === 'AbortError') reject(new Error('已取消'))
+        else reject(e)
+      }
+    })()
+  })
+  return { task: { cancel: () => controller.abort() }, done }
+}
+
+/** 书本内问答（SSE 流式） */
+export const qaStream = (payload, handlers) => aiQaStream(payload, handlers)
+/** 跨书问答（SSE 流式） */
+export const qaCrossStream = (payload, handlers) => aiQaStream(payload, handlers, { path: '/qa/cross/stream' })
+/** 笔记问答（SSE 流式，scope: book_only/notes_only/book_and_notes） */
+export const qaNoteStream = (payload, handlers) => aiQaStream(payload, handlers, { path: '/qa/note/stream' })
+
+// ===== 全书摘要（F3.1） =====
+/** 提交摘要任务：body { book_id, temperature?, detail_level? } → 202 { task_id, status, ... } */
+export const submitSummary = (payload) => http.post('/ai/summary', payload)
+/** 查询摘要：GET /ai/summary/{bookId}?version=latest|N → { content, version_id?, versions? } */
+export const getSummary = (bookId, version = 'latest') => http.get(`/ai/summary/${bookId}`, { params: { version } })
+/** 重新生成摘要（新版本，不删除旧版本） */
+export const regenerateSummary = (bookId, payload = {}) => http.post(`/ai/summary/${bookId}/regenerate`, payload)
+
+// ===== 思维导图（F3.5） =====
+/** 提交导图任务：body { book_id, source?, source_version_id?, chapter_path? } → 202 */
+export const submitMindmap = (payload) => http.post('/ai/mindmap', payload)
+/** 查询导图：GET /ai/mindmap/{bookId}?version=latest|N → { content, ... } */
+export const getMindmap = (bookId, version = 'latest') => http.get(`/ai/mindmap/${bookId}`, { params: { version } })
+/** 编辑导图内容（不递增版本号） */
+export const updateMindmap = (versionId, content) => http.patch(`/ai/mindmap/${versionId}`, { content })
+
+// ===== 任务状态轮询（§7.12） =====
+/** GET /ai/tasks/{taskId} → { task_id, status, progress_hint?, result_json?, error_message? } */
+export const getAiTask = (taskId) => http.get(`/ai/tasks/${taskId}`)
+
+// ===== 反馈与版本激活（F3.6） =====
+/** 反馈：POST /ai/{targetType}/{targetId}/feedback，body { rating, feedback? } */
+export const feedbackAi = (targetType, targetId, payload) => http.post(`/ai/${targetType}/${targetId}/feedback`, payload)
+/** 版本激活：POST /ai/versions/{versionId}/activate */
+export const activateAiVersion = (versionId) => http.post(`/ai/versions/${versionId}/activate`)

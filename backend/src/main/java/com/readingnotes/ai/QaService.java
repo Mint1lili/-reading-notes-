@@ -79,8 +79,8 @@ public class QaService {
             List<String> history = loadHistory(sessionId, req.getMultiTurnN() != null ? req.getMultiTurnN() : ragProps.getMultiTurnN());
             String rewritten = rewriteQuestion(req.getQuestion(), history);
 
-            // 3. 检索（复用 RagPipeline 三层 RAG）
-            RetrieveResult result = rag.retrieve("book_" + req.getBookId(), rewritten);
+            // 3. 检索（复用 RagPipeline 三层 RAG；阈值透传请求覆盖值，防止检索拒答与 done 事件阈值不一致）
+            RetrieveResult result = rag.retrieve("book_" + req.getBookId(), rewritten, threshold);
 
             // 4. meta 事件：告知前端已检索到 N 个片段
             List<com.readingnotes.ai.ChromaClient.SearchHit> hits = result.getHits();

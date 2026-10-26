@@ -22,7 +22,7 @@
         </div>
       </div>
       <el-empty v-if="!bookLoading && !books.length" :image-size="48" description="暂无书籍，去书库上传" style="padding: 20px 0" />
-      <div class="demo-tag">演示模式：AI 输出为内置示例，接口接入后切换真实</div>
+      <div class="demo-tag">AI 输出由豆包大模型实时生成 · 引用溯源自动关联原书</div>
     </aside>
 
     <!-- ===== 中：对话工作台 ===== -->
@@ -47,6 +47,7 @@
           <div v-if="m.role === 'ai'" class="ai-avatar">AI</div>
           <div class="msg-content">
             <div v-if="m.role === 'ai' && m.streaming" class="bubble ai">{{ streamingText }}<span class="cursor">▍</span></div>
+            <div v-else-if="m.role === 'ai' && m.markdown" class="bubble ai md"><pre class="mm">{{ m.content }}</pre></div>
             <div v-else-if="m.role === 'ai'" class="bubble ai" v-html="m.content"></div>
             <div v-else class="bubble user">{{ m.content }}</div>
 
@@ -125,7 +126,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, Promotion, Fold, Expand } from '@element-plus/icons-vue'
-import { listBooks, createNote, aiQa } from '../api'
+import { listBooks, createNote, qaStream, submitSummary, getSummary, submitMindmap, getMindmap, getAiTask } from '../api'
 
 const route = useRoute()
 
@@ -140,8 +141,8 @@ const streamingText = ref('')
 const bodyRef = ref()
 const citeOpen = ref(true)
 const activeCitations = ref([])
-
-const DEMO = false // 后端 /api/v1/ai/qa 已接入，走真实 RAG 问答
+/** 多轮会话：book_id → session_id（书本内问答透传，保持上下文） */
+const sessionIdMap = reactive({})
 
 const coverColors = ['#14532d', '#2f855a', '#5b8c6a', '#86b59b', '#3e6b4f', '#1f7a54']
 function coverColor(title) {
@@ -176,55 +177,53 @@ async function loadBooks() {
 
 function pickBook(b) { currentBook.value = b; messages.splice(0); }
 
-// ===== 演示数据生成 =====
-function demoAnswer(question) {
-  const t = currentBook.value?.title || '本书'
-  if (mode.value === 'summary') {
-    return `<p><b>《${t}》全书摘要</b></p><p>本书围绕核心主题，构建了「概念界定 → 问题分析 → 方法框架 → 实践验证」四层结构：</p><p>· <b>第 1-2 章</b>：交代背景与核心概念，厘清问题的边界；<br/>· <b>第 3-4 章</b>：提出分析框架与关键方法，附典型场景拆解；<br/>· <b>第 5-6 章</b>：案例实证与对比研究，给出可复用的结论；<br/>· <b>结语</b>：总结观点、局限与未来方向。</p><p>一句话概括：用结构化方法把复杂问题拆成可执行步骤，是本书的核心价值。</p>`
-  }
-  if (mode.value === 'mindmap') {
-    return `<pre class="mm">《${t}》 思维导图
-├─ 1 背景与问题
-│   ├─ 1.1 时代背景
-│   └─ 1.2 核心痛点
-├─ 2 概念与框架
-│   ├─ 2.1 关键概念界定
-│   └─ 2.2 分析框架
-├─ 3 方法与路径
-│   ├─ 3.1 方法一
-│   ├─ 3.2 方法二
-│   └─ 3.3 组合策略
-├─ 4 案例与验证
-│   ├─ 4.1 案例 A
-│   └─ 4.2 案例 B
-└─ 5 结论与展望
-    ├─ 5.1 核心结论
-    └─ 5.2 局限与未来</pre>`
-  }
-  // qa
-  return `<p>针对你的问题「${question}」，结合书中第 3 章的分析框架：</p><p>作者首先界定问题边界，然后从<b>现状、成因、影响</b>三个维度展开；书中给出的关键方法是<b>先建模再验证</b>——先提出假设框架，再用案例数据检验，避免直接跳到结论。</p><p>引用原文见右侧面板。</p>`
-}
+// ===== 异步任务（F3.1 全书摘要 / F3.5 思维导图）：提交 202 → 轮询任务 → 拉取内容 =====
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
 
-// 演示引用：按当前书与模式动态生成（接口接入后替换为真实检索片段）
-function demoCitationsFor() {
-  const t = currentBook.value?.title || '本书'
-  if (mode.value === 'qa') {
-    return [
-      { book: t, page: 23, text: '书中第 3 章指出：分析复杂问题时应先建立结构化的拆解框架，再逐层验证假设，而非直接套用经验结论。' },
-      { book: t, page: 47, text: '作者强调案例的价值在于可复现性：一个完整的案例应包含背景、决策、结果与复盘四个环节，缺一不可。' },
-      { book: t, page: 61, text: '关于方法组合：单一方法易陷入局部最优，跨方法的交叉验证能显著提升结论的稳健性。' }
-    ]
+async function generateTaskAnswer(question, modeNow) {
+  const isSummary = modeNow === 'summary'
+  const bookId = currentBook.value.book_id
+  try {
+    const resp = isSummary
+      ? await submitSummary({ book_id: bookId })
+      : await submitMindmap({ book_id: bookId })
+    const taskId = resp.task_id
+    if (!taskId) throw new Error('任务创建失败')
+
+    const m = { role: 'ai', content: '', citations: [], streaming: true, markdown: true, tasking: true }
+    messages.push(m)
+    streamingText.value = isSummary ? '正在生成全书摘要…' : '正在生成思维导图…'
+    scrollToBottom()
+
+    let status = 'RUNNING'
+    const deadline = Date.now() + 5 * 60 * 1000
+    while (Date.now() < deadline) {
+      await sleep(1500)
+      const t = await getAiTask(taskId)
+      status = t.status
+      const hint = t.progress_hint
+      if (hint) {
+        streamingText.value = isSummary ? `全书摘要生成中：${hint}` : `思维导图生成中：${hint}`
+        scrollToBottom()
+      }
+      if (status === 'COMPLETED' || status === 'FAILED') break
+    }
+
+    if (status !== 'COMPLETED') {
+      messages.splice(messages.indexOf(m), 1)
+      ElMessage.error(status === 'FAILED' ? '生成失败，请稍后重试' : '生成超时，请稍后重试')
+      return
+    }
+    const data = isSummary ? await getSummary(bookId) : await getMindmap(bookId)
+    const content = (data.content || '').trim()
+    m.streaming = false
+    m.tasking = false
+    m.content = content || '（未生成内容）'
+    streamingText.value = ''
+    scrollToBottom()
+  } catch (e) {
+    ElMessage.error(e?.message || (isSummary ? '摘要生成失败' : '导图生成失败'))
   }
-  if (mode.value === 'mindmap') {
-    return [
-      { book: t, page: 1, text: '全书结构：第 1-2 章为背景与概念界定，第 3-4 章为方法框架，第 5-6 章为案例验证，结语为结论与展望。' },
-      { book: t, page: 35, text: '框架部分：作者主张先界定问题边界，再分现状、成因、影响三个维度展开分析。' }
-    ]
-  }
-  return [
-    { book: t, page: 12, text: '引言章节：交代了本书的研究背景与核心问题，明确「结构化拆解 + 逐层验证」的主线。' },
-    { book: t, page: 58, text: '案例章节：通过多个实证案例验证方法的可复现性，并给出复用的四步流程。' }
-  ]
 }
 
 // ===== 发送与流式 =====
@@ -245,57 +244,96 @@ async function send() {
   await generateAnswer(q)
 }
 
-// 生成一条 AI 回答（真实 RAG：后端检索 + 豆包生成；打字机模拟流式展示）
+// 生成一条 AI 回答：
+// - 书本问答（qa）：SSE 流式（POST /api/v1/ai/qa/stream，meta/delta/done/error）
+// - 全书摘要（summary）/ 思维导图（mindmap）：异步任务（submit → 轮询 tasks → 拉取 Markdown）
 async function generateAnswer(question) {
-  busy.value = true
-  let full = ''
-  let citations = []
-  if (!DEMO) {
-    try {
-      const data = await aiQa({ book_id: currentBook.value.book_id, question })
-      full = data.answer || '（未返回内容）'
-      citations = (data.citations || []).map((c) => ({
-        book: currentBook.value?.title || '本书',
-        page: c.page || 0,
-        text: c.snippet || '',
-        similarity: c.similarity,
-        chapter_path: c.chapter_path,
-        chunk_id: c.chunk_id
-      }))
-    } catch (e) {
-      busy.value = false
-      ElMessage.error(e?.message || 'AI 问答暂不可用，请稍后再试')
-      return
-    }
-  } else {
-    await new Promise((r) => setTimeout(r, 500))
-    full = demoAnswer(question)
-    citations = demoCitationsFor()
+  const modeNow = mode.value
+  if (modeNow === 'summary' || modeNow === 'mindmap') {
+    await generateTaskAnswer(question, modeNow)
+    return
   }
-  busy.value = false
 
-  const m = { role: 'ai', content: full, citations, streaming: true }
+  // ===== qa：SSE 流式 =====
+  busy.value = true
+  const bookId = currentBook.value.book_id
+  const m = { role: 'ai', content: '', citations: [], streaming: true, sessionId: undefined }
   messages.push(m)
+  let full = ''
+  streamingText.value = ''
   scrollToBottom()
 
-  // 打字机效果
-  streamingText.value = ''
-  const plain = full.replace(/<[^>]+>/g, '').replace(/^\s*[|├└─]\s*/gm, '')
-  let i = 0
-  const timer = setInterval(() => {
-    i += 3
-    streamingText.value = plain.slice(0, i)
-    scrollToBottom()
-    if (i >= plain.length) {
-      clearInterval(timer)
-      m.streaming = false
-      m.content = full
-      streamingText.value = ''
-      activeCitations.value = citations
-      citeOpen.value = true   // 回答完成自动展开引用溯源
-      scrollToBottom()
+  const stream = qaStream(
+    {
+      book_id: bookId,
+      question,
+      session_id: sessionIdMap[bookId] || undefined,
+      // 当前向量化走豆包 multimodal 模型（文本检索区分度弱，top1≈0.3），
+      // 覆盖后端默认拒答阈值 0.5，避免检索命中却被拒答
+      similarity_threshold: 0.25
+    },
+    {
+      onMeta: (meta) => {
+        if (meta?.session_id) {
+          m.sessionId = meta.session_id
+          sessionIdMap[bookId] = meta.session_id
+        }
+        if (Array.isArray(meta?.retrieved_chunks)) {
+          m.citations = meta.retrieved_chunks.map((c) => ({
+            book: currentBook.value?.title || '本书',
+            page: c.page || 0,
+            text: `检索命中 · 相似度 ${Math.round((c.score || 0) * 100)}%`,
+            similarity: c.score,
+            chunk_id: c.chunk_id
+          }))
+        }
+      },
+      onDelta: (d) => {
+        if (d && typeof d.content === 'string') {
+          full += d.content
+          streamingText.value = full
+          scrollToBottom()
+        }
+      },
+      onDone: (d) => {
+        if (d && d.refused) {
+          finishAnswer(m, d.message || '本书中未提及相关内容', true)
+        } else if (d) {
+          finishAnswer(m, full, false)
+        }
+      },
+      onError: (e) => {
+        failAnswer(m, e)
+      }
     }
-  }, 40)
+  )
+  try {
+    const result = await stream.done
+    // done 事件可能已处理；此处兜底：异常/取消路径
+    if (result.error && !result.done) failAnswer(m, result.error)
+  } catch (e) {
+    failAnswer(m, e)
+  } finally {
+    busy.value = false
+  }
+}
+
+function finishAnswer(m, content, refused) {
+  m.streaming = false
+  m.content = content || '（未返回内容）'
+  streamingText.value = ''
+  if (refused) {
+    ElMessage.warning(content || '本书中未提及相关内容')
+  }
+  activeCitations.value = m.citations
+  citeOpen.value = m.citations.length > 0
+  scrollToBottom()
+}
+
+function failAnswer(m, e) {
+  const idx = messages.indexOf(m)
+  if (idx >= 0) messages.splice(idx, 1)
+  ElMessage.error(e?.message || 'AI 问答暂不可用，请稍后再试')
 }
 
 // 重新生成：删除旧回答，用原问题重新触发一次生成
@@ -418,7 +456,7 @@ onMounted(loadBooks)
 .bubble.ai :deep(b) { color: #14532d; }
 .cursor { color: #2f855a; animation: blink 1s step-start infinite; }
 @keyframes blink { 50% { opacity: 0; } }
-.mm { font-family: 'SF Mono', Consolas, monospace; font-size: 13px; line-height: 1.8; color: #334155; margin: 0; }
+.mm { font-family: 'SF Mono', Consolas, monospace; font-size: 13px; line-height: 1.8; color: #334155; margin: 0; white-space: pre-wrap; word-break: break-word; }
 .cite-caps { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
 .cite-tag { cursor: pointer; border-radius: 999px; }
 .msg-actions { margin-top: 6px; display: flex; gap: 4px; opacity: .8; }
