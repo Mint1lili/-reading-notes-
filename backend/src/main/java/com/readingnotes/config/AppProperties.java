@@ -35,4 +35,7 @@ public class AppProperties {
 
     /** 导出文件有效期（小时），用于响应里的 expires_at；到期文件由清理任务删除 */
     private int exportTtlHours = 1;
+
+    /** Chroma 向量数据目录（可选，embedded 模式下才需要；server 模式留空则跳过） */
+    private String chromaDir;
 }

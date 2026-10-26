@@ -48,6 +48,18 @@ public class Result<T> {
     }
 
     /**
+     * 成功响应 + 自定义 message（少数需要告诉前端"接下来会重启"之类的场景）。
+     */
+    public static <T> Result<T> ok(T data, String message) {
+        Result<T> r = new Result<>();
+        r.code = 0;
+        r.message = message;
+        r.data = data;
+        r.traceId = TraceContext.current();
+        return r;
+    }
+
+    /**
      * 失败响应，trace_id 取当前上下文。
      *
      * @param code    业务错误码
@@ -68,6 +80,7 @@ public class Result<T> {
      * @param message 用户可见文案
      * @param traceId 原始请求的 trace_id，保证前后端可对齐
      */
+    @SuppressWarnings("unused")
     public static <T> Result<T> fail(int code, String message, String traceId) {
         Result<T> r = new Result<>();
         r.code = code;
