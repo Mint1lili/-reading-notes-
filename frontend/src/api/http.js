@@ -37,6 +37,10 @@ http.interceptors.request.use(
  */
 http.interceptors.response.use(
   (resp) => {
+    // 204 No Content（删除/彻底删除等成功响应无 body）：视为成功，返回 null
+    if (resp.status === 204) {
+      return null
+    }
     const body = resp.data
     if (body && body.code === 0) {
       return body.data
