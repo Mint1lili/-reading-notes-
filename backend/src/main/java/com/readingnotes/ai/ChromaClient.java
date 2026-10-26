@@ -336,9 +336,60 @@ public class ChromaClient {
         }
     }
 
+    /**
+     * 拉取集合内全量切片（摘要/导图等"读全书"场景用，需求 F3.1 Map 阶段）。
+     * v2 端点 POST {collection}/get，body {"limit":N,"include":["documents","metadatas"]}；
+     * 响应中 ids/documents/metadatas 为普通数组（非 query 的嵌套分组），无 distances。
+     * 集合不存在时返回空列表（幂等语义：无数据可读）。
+     */
+    public List<SearchHit> getAll(String collection, int limit) {
+        ensureHealthy();
+        try {
+            String cid = resolveCollectionId(collection);
+            if (cid == null) {
+                return List.of();
+            }
+            ObjectNode body = mapper.createObjectNode();
+            body.put("limit", Math.max(1, limit));
+            body.set("include", mapper.valueToTree(List.of("documents", "metadatas")));
+            HttpRequest req = post(collectionsPath + "/" + cid + "/get", body);
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 404) {
+                collectionIds.remove(collection);
+                cid = resolveCollectionId(collection);
+                if (cid == null) {
+                    return List.of();
+                }
+                resp = http.send(post(collectionsPath + "/" + cid + "/get", body), HttpResponse.BodyHandlers.ofString());
+            }
+            if (resp.statusCode() != 200) {
+                log.error("get failed collection={} status={} body={}", collection, resp.statusCode(), resp.body());
+                throw new BusinessException(ErrorCode.CHROMA_DOWN);
+            }
+            JsonNode root = mapper.readTree(resp.body());
+            JsonNode ids = root.path("ids");
+            JsonNode docs = root.path("documents");
+            JsonNode metas = root.path("metadatas");
+            List<SearchHit> hits = new ArrayList<>();
+            for (int i = 0; i < ids.size(); i++) {
+                SearchHit h = new SearchHit();
+                h.setId(ids.get(i).asText());
+                h.setDocument(docs.path(i).asText(""));
+                h.setMetadata(metas.path(i));
+                h.setDistance(0.0);
+                hits.add(h);
+            }
+            return hits;
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("get failed collection={}", collection, e);
+            throw new BusinessException(ErrorCode.CHROMA_DOWN);
+        }
+    }
+
     /** 解析检索响应：ids/documents/metadatas/distances 均按查询分组，这里只取第 0 组 */
-    private List<SearchHit> parseHits(JsonNode root) {
-        JsonNode ids = root.path("ids").path(0);
+    private List<SearchHit> parseHits(JsonNode root) {        JsonNode ids = root.path("ids").path(0);
         JsonNode docs = root.path("documents").path(0);
         JsonNode metas = root.path("metadatas").path(0);
         JsonNode dists = root.path("distances").path(0);
