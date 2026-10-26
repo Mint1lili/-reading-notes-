@@ -103,6 +103,7 @@ public class DoubaoClient {
     // ------------------------------------------------------------------ Chat
 
     /** Chat 非流式调用，返回完整文本 */
+    @SuppressWarnings("unused")
     public String chat(List<ChatMessage> messages, double temperature, int maxTokens) {
         return chatWithUsage(messages, temperature, maxTokens).content();
     }
@@ -141,6 +142,7 @@ public class DoubaoClient {
      * Chat 流式调用（SSE）。每收到一个 content 增量回调一次 onDelta。
      * <p>用 {@code BodyHandlers.ofLines()} 边读边回调，不会把整段回答缓冲到结束才返回。
      */
+    @SuppressWarnings("unused")
     public void chatStream(List<ChatMessage> messages, double temperature, int maxTokens,
                            Consumer<String> onDelta) {
         chatStream(messages, temperature, maxTokens, onDelta, null);
@@ -255,6 +257,21 @@ public class DoubaoClient {
     /** Embedding 批量调用（自动按 batch-size 切批），失败按策略重试 */
     public List<List<Float>> embed(List<String> texts) {
         return embed(texts, null);
+    }
+
+    /**
+     * 健康探测（接口 12.1 用）：调用一次 embedding 测往返延迟。
+     * 返回 latency_ms；API 不可用或 Key 未配置返回 -1。
+     */
+    public int healthCheck() {
+        try {
+            long t0 = System.currentTimeMillis();
+            embed(List.of("ping"));
+            return (int) (System.currentTimeMillis() - t0);
+        } catch (Exception e) {
+            log.warn("doubao health check failed: {}", e.toString());
+            return -1;
+        }
     }
 
     /**
@@ -457,7 +474,7 @@ public class DoubaoClient {
             item.set("embedding", resp.path("embedding"));
             data = arr;
         }
-        if (!data.isArray() || data.size() == 0) {
+        if (!data.isArray() || data.isEmpty()) {
             log.error("embedding 响应缺少 data trace={} body={}", TraceContext.current(), truncate(resp.toString()));
             throw new BusinessException(ErrorCode.DOUBAO_DOWN, "豆包向量化返回结构异常（缺少 data）");
         }
@@ -560,10 +577,7 @@ public class DoubaoClient {
             return false; // 未开通时换端点也没用，直接暴露开通提示
         }
         // 条数超限、dimensions 不受支持都有各自的处理路径，不能误判成端点不匹配
-        if (isBatchLimitError(e.getRaw()) || mentionsDimension(e.getRaw())) {
-            return false;
-        }
-        return true;
+        return !(isBatchLimitError(e.getRaw()) || mentionsDimension(e.getRaw()));
     }
 
     /** 当前实际使用的向量化端点形态（text / multimodal） */
@@ -781,7 +795,7 @@ public class DoubaoClient {
             node.put("stream", true);
             // include_usage 并非所有模型/接入点都支持，默认不发；需要统计时再打开
             if (props.isStreamIncludeUsage()) {
-                node.put("stream_options", mapper.createObjectNode().put("include_usage", true));
+                node.set("stream_options", mapper.createObjectNode().put("include_usage", true));
             }
         }
         // 推理类模型（seed-2.x turbo/pro）默认开启深度思考，首字可能等数十秒；
