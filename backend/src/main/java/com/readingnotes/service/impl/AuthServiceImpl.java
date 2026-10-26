@@ -35,9 +35,16 @@ public class AuthServiceImpl implements AuthService {
 
     private static final String CODE_PREFIX = "captcha:code:";
     private static final String LIMIT_PREFIX = "captcha:limit:";
+    private static final String FAIL_PREFIX = "captcha:fail:";
+    private static final String LOCK_PREFIX = "captcha:lock:";
+    private static final String PWD_FAIL_PREFIX = "pwd:fail:";
+    private static final String PWD_LOCK_PREFIX = "pwd:lock:";
     private static final Duration CODE_TTL = Duration.ofMinutes(5);
     private static final Duration LIMIT_TTL = Duration.ofSeconds(60);
+    private static final Duration LOCK_TTL = Duration.ofMinutes(10);
     private static final int CODE_LENGTH = 6;
+    /** 校验失败阈值：超过即删除验证码/临时锁定，防暴力枚举 */
+    private static final int FAIL_THRESHOLD = 5;
 
     private final UserRepository userRepository;
     private final BCryptPasswordEncoder passwordEncoder;
@@ -165,8 +172,13 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public TokenVO loginByPassword(String email, String password) {
         String target = email.trim();
+        // 防爆破：失败锁定检查
+        if (Boolean.TRUE.equals(redisTemplate.hasKey(PWD_LOCK_PREFIX + target))) {
+            throw new BusinessException(ErrorCode.PASSWORD_LOCKED);
+        }
         User user = userRepository.findByEmail(target);
         if (user == null) {
+            recordPasswordFail(target);
             throw new BusinessException(ErrorCode.PASSWORD_WRONG);
         }
         requireActive(user);
@@ -176,10 +188,25 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ErrorCode.PASSWORD_NOT_SET);
         }
         if (!passwordEncoder.matches(password, user.getPasswordHash())) {
+            recordPasswordFail(target);
             throw new BusinessException(ErrorCode.PASSWORD_WRONG);
         }
 
+        // 登录成功：清除失败计数与锁定
+        redisTemplate.delete(PWD_FAIL_PREFIX + target);
+        redisTemplate.delete(PWD_LOCK_PREFIX + target);
         return issueToken(user.getUserId(), target);
+    }
+
+    /** 密码登录失败计数：超过阈值临时锁定 10 分钟（防暴力撞库） */
+    private void recordPasswordFail(String email) {
+        Long fails = redisTemplate.opsForValue().increment(PWD_FAIL_PREFIX + email);
+        if (fails != null && fails >= FAIL_THRESHOLD) {
+            redisTemplate.opsForValue().set(PWD_LOCK_PREFIX + email, "1", LOCK_TTL);
+            redisTemplate.delete(PWD_FAIL_PREFIX + email);
+        } else if (fails != null) {
+            redisTemplate.expire(PWD_FAIL_PREFIX + email, LOCK_TTL);
+        }
     }
 
     @Override
@@ -228,13 +255,28 @@ public class AuthServiceImpl implements AuthService {
         if (code == null || code.isBlank()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "验证码不能为空");
         }
+        // 防爆破：失败锁定检查（锁定期间一律拒绝，须重新获取验证码）
+        if (Boolean.TRUE.equals(redisTemplate.hasKey(LOCK_PREFIX + scene + ":" + email))) {
+            throw new BusinessException(ErrorCode.CAPTCHA_LOCKED);
+        }
         String cached = redisTemplate.opsForValue().get(CODE_PREFIX + scene + ":" + email);
         if (cached == null) {
             throw new BusinessException(ErrorCode.CAPTCHA_EXPIRED);
         }
         if (!cached.equalsIgnoreCase(code)) {
+            // 失败计数：达到阈值删除验证码并临时锁定 10 分钟，防止 6 位数字码被枚举爆破
+            Long fails = redisTemplate.opsForValue().increment(FAIL_PREFIX + scene + ":" + email);
+            if (fails != null && fails >= FAIL_THRESHOLD) {
+                redisTemplate.delete(CODE_PREFIX + scene + ":" + email);
+                redisTemplate.opsForValue().set(LOCK_PREFIX + scene + ":" + email, "1", LOCK_TTL);
+                redisTemplate.delete(FAIL_PREFIX + scene + ":" + email);
+            } else if (fails != null) {
+                redisTemplate.expire(FAIL_PREFIX + scene + ":" + email, CODE_TTL);
+            }
             throw new BusinessException(ErrorCode.CAPTCHA_WRONG);
         }
+        // 校验成功：清除失败计数（锁定自然由 TTL 过期）
+        redisTemplate.delete(FAIL_PREFIX + scene + ":" + email);
     }
 
     /** 冻结账号拦截 */

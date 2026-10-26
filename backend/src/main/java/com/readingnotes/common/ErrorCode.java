@@ -78,7 +78,9 @@ public enum ErrorCode {
     PASSWORD_NOT_SET(80006, "该账号未设置密码，请使用验证码登录或先设置密码", 400),
     PASSWORD_WRONG(80007, "邮箱或密码错误", 401),
     UNAUTHORIZED(80008, "未登录或登录已过期", 401),
-    MAIL_NOT_CONFIGURED(80009, "邮件服务未配置，请填写邮箱账号与 SMTP 授权码", 500);
+    MAIL_NOT_CONFIGURED(80009, "邮件服务未配置，请填写邮箱账号与 SMTP 授权码", 500),
+    PASSWORD_LOCKED(80010, "密码错误次数过多，账号已临时锁定，请 10 分钟后再试", 429),
+    CAPTCHA_LOCKED(80011, "验证码错误次数过多，请重新获取验证码", 429);
 
     private final int code;
     private final String message;
