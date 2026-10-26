@@ -154,7 +154,7 @@ public class ChromaClient {
         ensureHealthy();
         try {
             ObjectNode body = mapper.createObjectNode();
-            body.put("ids", mapper.valueToTree(ids));
+            body.set("ids", mapper.valueToTree(ids));
             body.set("embeddings", mapper.valueToTree(embeddings));
             body.set("documents", mapper.valueToTree(documents));
             body.set("metadatas", mapper.valueToTree(metadatas));
@@ -212,7 +212,7 @@ public class ChromaClient {
                 body.set("query_embeddings", mapper.createObjectNode().set("0", mapper.valueToTree(queryEmbedding)));
             }
             body.put("n_results", nResults);
-            body.put("include", mapper.valueToTree(List.of("documents", "metadatas", "distances")));
+            body.set("include", mapper.valueToTree(List.of("documents", "metadatas", "distances")));
             if (where != null && !where.isEmpty()) {
                 body.set("where", mapper.valueToTree(where));
             }
@@ -336,6 +336,43 @@ public class ChromaClient {
         }
     }
 
+    /**
+     * 列出所有集合（接口 12.2 健康检查用）。
+     * 返回集合的 name + id，调用方再逐个 count 拿向量数和 dimension（metadata.dimension）。
+     * 失败返回空列表（不抛异常，由上层判定 down）。
+     */
+    public List<CollectionInfo> listCollections() {
+        try {
+            HttpResponse<String> resp = http.send(
+                    HttpRequest.newBuilder()
+                            .uri(URI.create(props.getBaseUrl() + collectionsPath))
+                            .timeout(Duration.ofSeconds(5)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                log.warn("list collections status={}", resp.statusCode());
+                return List.of();
+            }
+            JsonNode root = mapper.readTree(resp.body());
+            List<CollectionInfo> list = new ArrayList<>();
+            if (root.isArray()) {
+                for (JsonNode n : root) {
+                    CollectionInfo c = new CollectionInfo();
+                    c.name = n.path("name").asText("");
+                    c.id = n.path("id").asText("");
+                    JsonNode meta = n.path("metadata");
+                    if (!meta.isMissingNode()) {
+                        c.dimension = meta.path("dimension").asInt(0);
+                    }
+                    list.add(c);
+                }
+            }
+            return list;
+        } catch (Exception e) {
+            log.warn("list collections failed: {}", e.toString());
+            return List.of();
+        }
+    }
+
     /** 解析检索响应：ids/documents/metadatas/distances 均按查询分组，这里只取第 0 组 */
     private List<SearchHit> parseHits(JsonNode root) {
         JsonNode ids = root.path("ids").path(0);
@@ -433,5 +470,13 @@ public class ChromaClient {
         private JsonNode metadata;
         /** cosine 距离，0 表示完全一致 */
         private double distance;
+    }
+
+    /** 集合信息（listCollections 返回） */
+    @Data
+    public static class CollectionInfo {
+        public String name;
+        public String id;
+        public int dimension;
     }
 }
