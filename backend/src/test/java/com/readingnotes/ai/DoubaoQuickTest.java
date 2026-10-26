@@ -71,7 +71,8 @@ public class DoubaoQuickTest {
                     System.getenv().getOrDefault("AI_EMBEDDING_API_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
                     zhipuKey,
                     System.getenv().getOrDefault("AI_EMBEDDING_API_MODEL", "embedding-3"),
-                    Integer.parseInt(System.getenv().getOrDefault("AI_EMBEDDING_API_DIM", "2048")));
+                    Integer.parseInt(System.getenv().getOrDefault("AI_EMBEDDING_API_DIM", "2048")),
+                    System.getenv("AI_EMBEDDING_INSTRUCTIONS"));
             System.out.println("embedding model: " + System.getenv().getOrDefault("AI_EMBEDDING_API_MODEL", "embedding-3"));
             List<List<Float>> vectors = provider.embed(List.of("测试向量", "今天天气很好"));
             System.out.println("✅ 向量维度：" + vectors.get(0).size() + "，条数：" + vectors.size());

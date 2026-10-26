@@ -37,8 +37,8 @@ import java.util.UUID;
 @Component
 public class JwtUtils {
 
-    /** 签名密钥，从配置文件读取，至少 32 字节（HMAC-SHA256 要求） */
-    @Value("${jwt.secret:reading-notes-secret-key-must-be-at-least-32-bytes-2026}")
+    /** 签名密钥，从配置读取（jwt.secret / 环境变量 JWT_SECRET 注入），至少 32 字节（HMAC-SHA256 要求） */
+    @Value("${jwt.secret}")
     private String secret;
 
     /** Token 有效期（毫秒），默认 2 小时 */
