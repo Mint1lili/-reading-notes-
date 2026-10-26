@@ -46,9 +46,10 @@ public class RagPipeline {
      *
      * @param collection Chroma 集合名（book_{book_id} / notes_all）
      * @param question   用户问题（已做多轮改写）
+     * @param threshold  相似度阈值（调用方传入，支持请求参数覆盖全局配置；≤0 时用全局配置）
      * @return 召回片段（按相似度降序，已应用阈值兜底）
      */
-    public RetrieveResult retrieve(String collection, String question) {
+    public RetrieveResult retrieve(String collection, String question, double threshold) {
         // ① 查询理解：识别章节/页码线索 → 生成元数据过滤
         Map<String, Object> where = null;
         if (props.isEnableMetadataFilter()) {
@@ -61,16 +62,22 @@ public class RagPipeline {
                 chroma.query(collection, qVec, where, props.getRecallTopK());
 
         // ③ 阈值兜底：Top-1 相似度（distance→cosine）低于阈值直接拒答
+        double effective = threshold > 0 ? threshold : props.getSimilarityThreshold();
         double top1 = hits.isEmpty() ? 0.0 : cosineFromDistance(hits.get(0).getDistance());
-        if (top1 < props.getSimilarityThreshold()) {
+        if (top1 < effective) {
             log.info("below threshold top1={} threshold={} question={} trace={}",
-                    top1, props.getSimilarityThreshold(), question, TraceContext.current());
+                    top1, effective, question, TraceContext.current());
             return new RetrieveResult(true, List.of(), where);
         }
 
         // Rerank 精排（F5.2 enable_rerank；默认取召回 Top-N 交给后续 LLM）
         List<ChromaClient.SearchHit> reranked = hits.subList(0, Math.min(hits.size(), props.getRerankTopN()));
         return new RetrieveResult(false, reranked, where);
+    }
+
+    /** 兼容旧签名（全局配置阈值），供 Eval 等批量评估场景使用 */
+    public RetrieveResult retrieve(String collection, String question) {
+        return retrieve(collection, question, -1);
     }
 
     /** 章节/页码元数据过滤条件构造 */

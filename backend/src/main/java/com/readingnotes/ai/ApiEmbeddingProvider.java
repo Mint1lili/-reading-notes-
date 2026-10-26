@@ -2,6 +2,7 @@ package com.readingnotes.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.readingnotes.common.BusinessException;
 import com.readingnotes.common.ErrorCode;
 import lombok.extern.slf4j.Slf4j;
@@ -40,16 +41,20 @@ public class ApiEmbeddingProvider implements EmbeddingProvider {
     private final String apiKey;
     private final String model;
     private final int dim;
+    /** 查询侧检索指令（仅 multimodal 端点发送；与入库侧 corpus 指令配套，提升文本检索精度） */
+    private final String instructions;
 
     public ApiEmbeddingProvider(
             @Value("${ai.embedding.api-base-url:https://open.bigmodel.cn/api/paas/v4}") String baseUrl,
             @Value("${ai.embedding.api-key:}") String apiKey,
             @Value("${ai.embedding.api-model:embedding-3}") String model,
-            @Value("${ai.embedding.api-dim:2048}") int dim) {
+            @Value("${ai.embedding.api-dim:2048}") int dim,
+            @Value("${ai.embedding.instructions:}") String instructions) {
         this.baseUrl = baseUrl;
         this.apiKey = apiKey;
         this.model = model;
         this.dim = dim;
+        this.instructions = instructions;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -60,11 +65,30 @@ public class ApiEmbeddingProvider implements EmbeddingProvider {
     public List<List<Float>> embed(List<String> texts) {
         ensureKey();
         try {
+            // vision 模型只暴露 multimodal 端点（input 为对象数组）；其余模型走标准 text /embeddings
+            boolean multimodal = model.toLowerCase().contains("vision");
+            String url = baseUrl + (multimodal ? "/embeddings/multimodal" : "/embeddings");
+            JsonNode input;
+            if (multimodal) {
+                List<JsonNode> items = new ArrayList<>();
+                for (String t : texts) {
+                    items.add(mapper.createObjectNode().put("type", "text").put("text", t));
+                }
+                input = mapper.valueToTree(items);
+            } else {
+                input = mapper.valueToTree(texts);
+            }
             String body = mapper.writeValueAsString(mapper.createObjectNode()
                     .put("model", model)
-                    .set("input", mapper.valueToTree(texts)));
+                    .put("dimensions", dim)
+                    .set("input", input));
+            if (multimodal && instructions != null && !instructions.isBlank()) {
+                // 查询侧检索指令：仅 multimodal 端点支持（智谱 text 端点不发送）
+                body = mapper.writeValueAsString(((ObjectNode) mapper.readTree(body))
+                        .put("instructions", instructions));
+            }
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(baseUrl + "/embeddings"))
+                    .uri(URI.create(url))
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer " + apiKey)
                     .timeout(Duration.ofSeconds(60))
@@ -77,12 +101,15 @@ public class ApiEmbeddingProvider implements EmbeddingProvider {
             }
             List<List<Float>> result = new ArrayList<>();
             JsonNode root = mapper.readTree(resp.body());
-            for (JsonNode item : root.path("data")) {
-                List<Float> vector = new ArrayList<>();
-                for (JsonNode v : item.path("embedding")) {
-                    vector.add((float) v.asDouble());
+            JsonNode data = root.path("data");
+            if (data.isArray()) {
+                // 标准 /embeddings：data 为数组 [{embedding:[...]}, ...]
+                for (JsonNode item : data) {
+                    addVector(result, item.path("embedding"));
                 }
-                result.add(vector);
+            } else if (data.isObject()) {
+                // 方舟 multimodal：data 为对象 {"embedding":[...]}（单条）
+                addVector(result, data.path("embedding"));
             }
             return result;
         } catch (BusinessException e) {
@@ -107,5 +134,13 @@ public class ApiEmbeddingProvider implements EmbeddingProvider {
 
     private String truncate(String s) {
         return s == null || s.length() <= 200 ? s : s.substring(0, 200);
+    }
+
+    private void addVector(List<List<Float>> result, JsonNode embeddingNode) {
+        List<Float> vector = new ArrayList<>();
+        for (JsonNode v : embeddingNode) {
+            vector.add((float) v.asDouble());
+        }
+        result.add(vector);
     }
 }

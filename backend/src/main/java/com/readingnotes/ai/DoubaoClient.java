@@ -282,6 +282,15 @@ public class DoubaoClient {
      * @return 与入参一一对应的向量，顺序保证一致
      */
     public List<List<Float>> embed(List<String> texts, boolean[] rateLimited) {
+        return embed(texts, rateLimited, props.getEmbeddingInstruction());
+    }
+
+    /**
+     * Embedding 批量调用（带检索指令，仅 multimodal 端点发送）。
+     *
+     * @param instruction 检索指令（corpus 侧入库指令 / query 侧查询指令），空则不发 instructions 字段
+     */
+    public List<List<Float>> embed(List<String> texts, boolean[] rateLimited, String instruction) {
         ensureKey();
         if (texts == null || texts.isEmpty()) {
             return List.of();
@@ -297,7 +306,7 @@ public class DoubaoClient {
             int size = Math.max(1, effectiveBatchSize.get());
             int to = Math.min(prepared.size(), from + size);
             try {
-                out.addAll(embedBatch(prepared.subList(from, to), rateLimited));
+                out.addAll(embedBatch(prepared.subList(from, to), rateLimited, instruction));
                 from = to;
             } catch (BusinessException e) {
                 // 服务端返回 "max 10, got 16" → 自适应降批后重试当前分片，不消耗重试预算
@@ -340,10 +349,10 @@ public class DoubaoClient {
     }
 
     /** 单批请求（已保证 ≤ 当前批大小），内部完成重试与接口形态自适应 */
-    private List<List<Float>> embedBatch(List<String> batch, boolean[] rateLimited) {
+    private List<List<Float>> embedBatch(List<String> batch, boolean[] rateLimited, String instruction) {
         String mode = resolveEmbeddingMode();
         if (MODE_MULTIMODAL.equals(mode)) {
-            return embedMultimodal(batch, rateLimited, true);
+            return embedMultimodal(batch, rateLimited, true, instruction);
         }
         try {
             return embedText(batch, rateLimited);
@@ -354,7 +363,7 @@ public class DoubaoClient {
                 log.warn("模型 {} 的 /embeddings 端点不可用（{}），尝试 /embeddings/multimodal trace={}",
                         props.getEmbeddingModel(), e.getStatus(), TraceContext.current());
                 try {
-                    List<List<Float>> vectors = embedMultimodal(batch, rateLimited, false);
+                    List<List<Float>> vectors = embedMultimodal(batch, rateLimited, false, instruction);
                     resolvedEmbeddingMode.set(MODE_MULTIMODAL);
                     log.info("已切换为多模态向量化端点 model={} trace={}",
                             props.getEmbeddingModel(), TraceContext.current());
@@ -386,7 +395,7 @@ public class DoubaoClient {
      * 多模态向量化：POST /embeddings/multimodal，input 为 [{type:text,text:...}]。
      * doubao-embedding-vision-* 只暴露这个端点（官方文档 82379/1554710）。
      */
-    private List<List<Float>> embedMultimodal(List<String> batch, boolean[] rateLimited, boolean allowTextFallback) {
+    private List<List<Float>> embedMultimodal(List<String> batch, boolean[] rateLimited, boolean allowTextFallback, String instruction) {
         ObjectNode node = mapper.createObjectNode();
         node.put("model", props.getEmbeddingModel());
         ArrayNode input = mapper.createArrayNode();
@@ -395,7 +404,7 @@ public class DoubaoClient {
         }
         node.set("input", input);
         node.put("encoding_format", "float");
-        String instruction = props.getEmbeddingInstruction();
+        // 检索指令（官方要求针对场景定制；corpus 入库/query 查询由调用方分别传入）
         if (instruction != null && !instruction.isBlank()) {
             node.put("instructions", instruction);
         }
@@ -633,7 +642,7 @@ public class DoubaoClient {
         }
         long start = System.currentTimeMillis();
         try {
-            List<Float> v = embedBatch(List.of("ping"), null).get(0);
+            List<Float> v = embedBatch(List.of("ping"), null, null).get(0);
             out.put("status", "UP");
             out.put("actual_dim", v.size());
         } catch (BusinessException e) {
