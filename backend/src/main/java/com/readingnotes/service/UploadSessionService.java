@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -76,6 +77,10 @@ public class UploadSessionService {
         private String expiresAt;
     }
 
+    /** 上传会话 ID 白名单：up_ + 32 位 hex（服务端生成，杜绝路径穿越） */
+    private static final Pattern UPLOAD_ID_PATTERN =
+            Pattern.compile("^up_[a-f0-9]{32}$");
+
     /**
      * 初始化上传会话。
      * <p>
@@ -120,6 +125,7 @@ public class UploadSessionService {
 
     /** 上传单片（幂等：同一下标重复上传覆盖旧片） */
     public Map<String, Object> saveChunk(String uploadId, int index, MultipartFile chunk) {
+        assertUploadId(uploadId);
         Session s = load(uploadId);
         if (index < 0 || index >= s.getTotalChunks()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
@@ -163,6 +169,7 @@ public class UploadSessionService {
 
     /** 查询会话（断线重连时前端据此只补缺失片） */
     public Map<String, Object> status(String uploadId) {
+        assertUploadId(uploadId);
         Session s = load(uploadId);
         if (expired(s)) {
             cleanup(uploadId);
@@ -173,6 +180,7 @@ public class UploadSessionService {
 
     /** 读取有效会话（合并入库时取原始文件名/声明大小，避免前端重复传） */
     public Session require(String uploadId) {
+        assertUploadId(uploadId);
         Session s = load(uploadId);
         if (expired(s)) {
             cleanup(uploadId);
@@ -188,6 +196,7 @@ public class UploadSessionService {
      * 拼出一个"能打开但内容缺失"的坏 PDF —— 后者会在构建阶段才炸，排查成本高得多。
      */
     public Path assemble(String uploadId) {
+        assertUploadId(uploadId);
         Session s = load(uploadId);
         if (expired(s)) {
             cleanup(uploadId);
@@ -234,13 +243,22 @@ public class UploadSessionService {
 
     /** 上传成功后清理分片与会话（临时 PDF 由调用方删除） */
     public void complete(String uploadId) {
+        assertUploadId(uploadId);
         cleanup(uploadId);
     }
 
     /** 主动放弃上传 */
     public void abort(String uploadId) {
+        assertUploadId(uploadId);
         cleanup(uploadId);
         log.info("upload aborted id={}", uploadId);
+    }
+
+    /** uploadId 格式白名单校验：非服务端生成格式一律按会话不存在处理（防路径穿越） */
+    private void assertUploadId(String uploadId) {
+        if (uploadId == null || !UPLOAD_ID_PATTERN.matcher(uploadId).matches()) {
+            throw new BusinessException(ErrorCode.UPLOAD_SESSION_GONE);
+        }
     }
 
     // =========================================================================
