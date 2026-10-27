@@ -259,23 +259,40 @@ async function send() {
   await generateAnswer(q)
 }
 
-// 生成一条 AI 回答：
-// - 书本问答（qa）：SSE 流式（POST /api/v1/ai/qa/stream，meta/delta/done/error）
-// - 全书摘要（summary）/ 思维导图（mindmap）：异步任务（submit → 轮询 tasks → 拉取 Markdown）
+// 生成一条 AI 回答（问什么答什么，自动路由，不依赖当前标签）：
+// - 开放问题（带"？"且非动作指令）→ 书本问答（SSE 流式）
+// - 动作指令（生成摘要/导图/按章节梳理…）→ 对应异步任务
+// - 无明确意图 → 按当前标签走
 async function generateAnswer(question) {
-  const modeNow = mode.value
-  if (modeNow === 'summary' || modeNow === 'mindmap') {
-    // 全书摘要本质是"生成摘要"动作：输入开放问题（带问号）时引导到书本问答，
-    // 避免"问适合谁读却返回全文摘要"这种答非所问
-    if (modeNow === 'summary' && /？|\?/.test(question) && !/生成|摘要/.test(question)) {
-      ElMessage.info('「全书摘要」用于生成整本书的摘要；想问开放性问题请切到「书本问答」标签')
-      return
-    }
-    await generateTaskAnswer(question, modeNow)
+  const q = question || ''
+  const isAction = /生成|摘要|总结|导图|思维导图|梳理|结构|大纲/.test(q)
+  const isQuestion = /[？?]/.test(q) && !isAction
+
+  if (isQuestion) {
+    mode.value = 'qa'
+    await generateQAAnswer(q)
     return
   }
+  if (/导图|思维导图|按章节|梳理|结构|大纲/.test(q)) {
+    mode.value = 'mindmap'
+    await generateTaskAnswer(q, 'mindmap')
+    return
+  }
+  if (/摘要|总结/.test(q)) {
+    mode.value = 'summary'
+    await generateTaskAnswer(q, 'summary')
+    return
+  }
+  // 无明确意图：按当前标签走
+  if (mode.value === 'summary' || mode.value === 'mindmap') {
+    await generateTaskAnswer(q, mode.value)
+    return
+  }
+  await generateQAAnswer(q)
+}
 
-  // ===== qa：SSE 流式 =====
+// ===== 书本问答：SSE 流式 =====
+async function generateQAAnswer(question) {
   busy.value = true
   const bookId = currentBook.value.book_id
   const m = { role: 'ai', content: '', citations: [], streaming: true, sessionId: undefined }
