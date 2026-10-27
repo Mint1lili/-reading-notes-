@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,9 +24,10 @@ import java.util.regex.Pattern;
 /**
  * 思维导图（F3.5，API 文档 §7.7/7.8/7.9）
  *
- *  - 提交：POST /mindmap {book_id, source: summary|chapter, source_version_id?, chapter_path?} → 202
+ *  - 提交：POST /mindmap {book_id, source: summary|chapter|structure, source_version_id?, chapter_path?} → 202
  *  - 生成：source=summary 时基于该书 SUMMARY 产物（可指定版本，默认 latest）；
- *          source=chapter 时基于指定章节切片（Chroma 按 chapter_path 过滤）
+ *          source=chapter 时基于指定章节切片（Chroma 按 chapter_path 过滤）；
+ *          source=structure 时按 chapters 表章节架构生成（骨架=目录标题，要点参考摘要）
  *  - 产物：Markdown 层级导图（# 根主题 / ## 一级分支 / ### 二级分支 / - 叶子要点），写 ai_versions(MINDMAP)
  *  - 编辑：PATCH /mindmap/{version_id} {content} 直接改内容，不递增版本号
  *
@@ -63,7 +65,7 @@ public class MindmapService {
         }
         String src = normalizeSource(source);
         if (src == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "source 仅支持 summary 或 chapter");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "source 仅支持 summary、chapter 或 structure");
         }
         if ("chapter".equals(src) && (chapterPath == null || chapterPath.isBlank())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "source=chapter 时必须提供 chapter_path");
@@ -128,7 +130,7 @@ public class MindmapService {
             return "summary";
         }
         String s = source.trim().toLowerCase();
-        if (s.equals("summary") || s.equals("chapter")) {
+        if (s.equals("summary") || s.equals("chapter") || s.equals("structure")) {
             return s;
         }
         return null;
@@ -144,19 +146,29 @@ public class MindmapService {
             jdbc.update("UPDATE ai_tasks SET status='RUNNING', started_at=? WHERE task_id=?", now, taskId);
 
             String material;
+            String content;
+            String prompt;
             if ("chapter".equals(source)) {
                 material = loadChapter(bookId, chapterPath);
+                prompt = "你是思维导图整理助手。请把下面内容整理成 Markdown 层级思维导图：\n"
+                        + "以 # 开头写根主题（书名），## 写一级分支，### 写二级分支，"
+                        + "更细的要点用 - 列表；层级清晰、要点完整，不要输出解释，直接输出 Markdown。\n\n"
+                        + "【内容】\n" + material;
+                content = doubao.chat(
+                        List.of(new DoubaoClient.ChatMessage("user", prompt)), 0.3, 2000);
+            } else if ("structure".equals(source)) {
+                // 骨架严格等于书目录（按页序），要点由 LLM 单独提取后由后端拼接，
+                // 章节标题与顺序 100% 可控，不与摘要顺序混排
+                content = generateStructureMindmap(bookId, sourceVersionId);
             } else {
                 material = loadSummary(bookId, sourceVersionId);
+                prompt = "你是思维导图整理助手。请把下面内容整理成 Markdown 层级思维导图：\n"
+                        + "以 # 开头写根主题（书名），## 写一级分支，### 写二级分支，"
+                        + "更细的要点用 - 列表；层级清晰、要点完整，不要输出解释，直接输出 Markdown。\n\n"
+                        + "【内容】\n" + material;
+                content = doubao.chat(
+                        List.of(new DoubaoClient.ChatMessage("user", prompt)), 0.3, 2000);
             }
-
-            String content = doubao.chat(
-                    List.of(new DoubaoClient.ChatMessage("user",
-                            "你是思维导图整理助手。请把下面内容整理成 Markdown 层级思维导图：\n"
-                                    + "以 # 开头写根主题（书名），## 写一级分支，### 写二级分支，"
-                                    + "更细的要点用 - 列表；层级清晰、要点完整，不要输出解释，直接输出 Markdown。\n\n"
-                                    + "【内容】\n" + material)),
-                    0.3, 2000);
             if (content == null || content.isBlank()) {
                 throw new BusinessException(ErrorCode.AI_UNAVAILABLE);
             }
@@ -199,6 +211,161 @@ public class MindmapService {
         }
         Object c = rows.get(0).get("content");
         return c == null ? "" : String.valueOf(c);
+    }
+
+    /** 章节树节点：路径/标题/层级（对应 chapters 表） */
+    private static class ChapterNode {
+        final String path;
+        final String title;
+        final int level;
+
+        ChapterNode(String path, String title, int level) {
+            this.path = path;
+            this.title = title;
+            this.level = level;
+        }
+    }
+
+    /** source=structure：生成"章节架构=目录"的思维导图。
+     *  骨架（# 书名 / ## 章 / ### 节 / - 小节）按书内页序严格拼接，
+     *  每个标题下的要点由 LLM 单独提取后由后端插入，LLM 失败时仅输出骨架（结构不丢）。 */
+    private String generateStructureMindmap(String bookId, String sourceVersionId) {
+        List<ChapterNode> tree = loadChapterTree(bookId);
+        Map<String, List<String>> points = new HashMap<>();
+        try {
+            points = extractChapterPoints(bookId, tree, sourceVersionId);
+        } catch (Exception e) {
+            log.warn("mindmap structure points failed, fallback to skeleton-only trace={}", TraceContext.current(), e);
+        }
+        return composeStructureMindmap(bookId, tree, points);
+    }
+
+    /** 读 chapters 表章节树，按书内页序（start_page/text_offset）排序，保证与目录一致 */
+    private List<ChapterNode> loadChapterTree(String bookId) {
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT chapter_path, title, level, start_page, text_offset FROM chapters
+                WHERE book_id=? ORDER BY COALESCE(start_page, 0), COALESCE(text_offset, 0)
+                """, bookId);
+        if (rows.isEmpty()) {
+            throw new BusinessException(ErrorCode.BUILD_FAILED, "该书暂无章节信息，无法按章节生成导图");
+        }
+        List<ChapterNode> tree = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            String path = row.get("chapter_path") == null ? "" : String.valueOf(row.get("chapter_path"));
+            String title = row.get("title") == null ? "" : String.valueOf(row.get("title"));
+            int level = ((Number) row.get("level")).intValue();
+            tree.add(new ChapterNode(path, title, level));
+        }
+        return tree;
+    }
+
+    /** LLM 逐标题提取要点：每行 "路径|要点1~要点2"，解析失败不影响骨架 */
+    private Map<String, List<String>> extractChapterPoints(String bookId, List<ChapterNode> tree,
+                                                           String sourceVersionId) {
+        StringBuilder list = new StringBuilder();
+        for (ChapterNode n : tree) {
+            list.append(n.path).append('|').append(n.title).append('\n');
+        }
+        String summary = "";
+        try {
+            summary = loadSummary(bookId, sourceVersionId);
+        } catch (BusinessException ignored) {
+            // 无摘要时仅按标题推断要点
+        }
+        String prompt = "你负责为书籍章节提取要点。下面是章节标题列表（每行：路径|标题）和全书摘要。\n"
+                + "请为每个标题生成 1~3 条简明要点（依据摘要与章节标题，宁缺毋滥）。\n"
+                + "严格输出格式：每行 = 路径|要点1~要点2（多条要点用 ~ 分隔），路径必须与列表完全一致。\n"
+                + "不要输出 Markdown 标记、不要输出解释、不要遗漏标题。\n\n"
+                + "【章节列表】\n" + list
+                + "\n【全书摘要】\n" + (summary.isBlank() ? "（无）" : summary);
+        String raw = doubao.chat(List.of(new DoubaoClient.ChatMessage("user", prompt)), 0.3, 2000);
+        Map<String, List<String>> map = new LinkedHashMap<>();
+        if (raw == null || raw.isBlank()) {
+            return map;
+        }
+        for (String line : raw.split("\\r?\\n")) {
+            String l = line.trim();
+            if (l.isEmpty()) {
+                continue;
+            }
+            int idx = l.indexOf('|');
+            if (idx <= 0) {
+                continue;
+            }
+            String path = l.substring(0, idx).trim();
+            String pts = l.substring(idx + 1).trim();
+            if (path.isEmpty() || pts.isEmpty()) {
+                continue;
+            }
+            List<String> ps = new ArrayList<>();
+            for (String p : pts.split("~")) {
+                String t = p.trim();
+                // LLM 可能输出 "路径|标题|要点" 或 "标题|要点"，剥掉残留前缀只留纯要点
+                int bar = t.indexOf('|');
+                if (bar >= 0) {
+                    t = t.substring(bar + 1).trim();
+                }
+                if (!t.isEmpty()) {
+                    ps.add(t);
+                }
+            }
+            if (!ps.isEmpty()) {
+                map.put(path, ps);
+            }
+        }
+        return map;
+    }
+
+    /** 拼接导图：骨架标题（严格目录序）+ 每个标题下插入要点 */
+    private String composeStructureMindmap(String bookId, List<ChapterNode> tree,
+                                           Map<String, List<String>> points) {
+        String bookTitle = "本书";
+        List<Map<String, Object>> books = jdbc.queryForList(
+                "SELECT title FROM books WHERE book_id=? AND soft_delete=0", bookId);
+        if (!books.isEmpty() && books.get(0).get("title") != null) {
+            bookTitle = String.valueOf(books.get(0).get("title"));
+        }
+        StringBuilder sb = new StringBuilder("# ").append(bookTitle).append("\n");
+        for (ChapterNode n : tree) {
+            if (n.title.isBlank()) {
+                continue;
+            }
+            // chapters 表的 level 字段可能全为 1（扁平），按标题编号模式推断层级：
+            // "2 市场分析"→章(##)，"2.1 市场痛点"→节(###)，"2.1.1 xxx"→小节(-)
+            int lvl = n.level <= 0 ? 1 : n.level;
+            if (inferChapterLevel(n.title) > lvl) {
+                lvl = inferChapterLevel(n.title);
+            }
+            if (lvl == 1) {
+                sb.append("## ").append(n.title).append("\n");
+            } else if (lvl == 2) {
+                sb.append("### ").append(n.title).append("\n");
+            } else {
+                sb.append("- ").append(n.title).append("\n");
+            }
+            List<String> ps = points.get(n.path);
+            if (ps != null) {
+                for (String p : ps) {
+                    sb.append("- ").append(p).append("\n");
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 按标题编号模式推断层级："2 市场分析"→1；"2.1 市场痛点"→2；"2.1.1"→3；无编号→1 */
+    private int inferChapterLevel(String title) {
+        String t = title == null ? "" : title.trim();
+        if (t.matches("^\\d+\\.\\d+\\.\\d+.*")) {
+            return 3;
+        }
+        if (t.matches("^\\d+\\.\\d+.*")) {
+            return 2;
+        }
+        if (t.matches("^\\d+.*")) {
+            return 1;
+        }
+        return 1;
     }
 
     /** source=chapter：从 Chroma 读该书切片，按 chapter_path 过滤（精确或前缀匹配，支持多种章节写法） */

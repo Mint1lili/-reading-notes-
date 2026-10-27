@@ -190,9 +190,14 @@ async function generateTaskAnswer(question, modeNow) {
   const isSummary = modeNow === 'summary'
   const bookId = currentBook.value.book_id
   try {
+    let payload = { book_id: bookId }
+    if (!isSummary && /章节|目录|架构|梳理|结构|大纲/.test(question || '')) {
+      // 用户要"按章节架构"的导图：骨架严格等于书目录（后端 source=structure）
+      payload = { book_id: bookId, source: 'structure' }
+    }
     const resp = isSummary
-      ? await submitSummary({ book_id: bookId })
-      : await submitMindmap({ book_id: bookId })
+      ? await submitSummary(payload)
+      : await submitMindmap(payload)
     const taskId = resp.task_id
     if (!taskId) throw new Error('任务创建失败')
 
