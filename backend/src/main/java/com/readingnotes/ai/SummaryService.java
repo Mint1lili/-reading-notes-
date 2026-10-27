@@ -26,6 +26,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * 全书摘要（F3.1，API 文档 §7.1/7.2/7.3）
@@ -138,7 +139,12 @@ public class SummaryService {
                 throw new BusinessException(ErrorCode.BUILD_FAILED, "该书籍知识库为空，无法生成摘要");
             }
             List<SearchHit> all = chroma.getAll(COLLECTION_PREFIX + bookId, (int) Math.min(total, 5000));
-            Map<String, List<SearchHit>> byChapter = groupByChapter(all);
+            // 过滤封面/目录噪音（chunk 里 page=1 封面、含连续点线的短目录行），
+            // 否则「开头采样」会取到"申报人/目录……"而非真引言，且封面目录会混入"未分章节"小结
+            List<SearchHit> content = all.stream()
+                    .filter(h -> !isNoiseChunk(h))
+                    .collect(Collectors.toList());
+            Map<String, List<SearchHit>> byChapter = groupByChapter(content);
             List<String> chapterKeys = new ArrayList<>(byChapter.keySet());
 
             // 3. Map：章节小结 LLM 调用并发（最多 2 路同时，防豆包限流；原串行 24 章约 90s，
@@ -229,7 +235,7 @@ public class SummaryService {
             }
 
             // 5. Reduce：章节小结 + 全书开头/结尾 → 最终摘要
-            String opening = sampleOpening(all);
+            String opening = sampleOpening(content);
             String finalSummary = doubao.chat(
                     List.of(new DoubaoClient.ChatMessage("user",
                             "你是一个图书摘要助手。请根据全书开头结尾与各章节小结，生成《" + bookId + "》的完整摘要。\n"
@@ -328,6 +334,22 @@ public class SummaryService {
             return meta.path("page").asInt(0);
         }
         return 0;
+    }
+
+    /**
+     * 封面/目录噪音判定：page=1 视为封面；含连续点线（目录行特征）且文本较短的视为目录。
+     * 正文段落一般无点线，表格/长文本超 300 字符不会被误杀。
+     */
+    private boolean isNoiseChunk(SearchHit h) {
+        if (pageOf(h) <= 1) {
+            return true;
+        }
+        String d = h.getDocument();
+        if (d == null) {
+            return true;
+        }
+        d = d.trim();
+        return d.length() < 300 && d.matches("(?s).*[\\.。·…]{4,}.*");
     }
 
     // ==================== 版本与查询 ====================

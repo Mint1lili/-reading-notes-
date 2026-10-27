@@ -167,12 +167,10 @@ onMounted(async () => {
     const data = await listChapters(bookId)
     flatChapters.value = data.chapters || []
     tree.value = buildTree(flatChapters.value)
-    if (flatChapters.value.length) {
-      // 默认打开第一章正文
-      const first = flatChapters.value[0]
-      currentChapter.value = first
-      await loadChunks(first.chapter_path)
-    }
+    // 默认加载全书（chapter 不传=全书分页），从第一页开始连续阅读；
+    // 左侧目录仅用于定位跳转，翻页可看完每一页内容
+    currentChapter.value = null
+    await loadChunks(null)
   } catch { /* 章节加载失败时右侧展示空态 */ }
   treeLoading.value = false
 })
