@@ -5,6 +5,7 @@ import com.readingnotes.build.BuildTaskService;
 import com.readingnotes.build.PdfTextExtractor;
 import com.readingnotes.common.BusinessException;
 import com.readingnotes.common.ErrorCode;
+import com.readingnotes.security.AuthContext;
 import com.readingnotes.config.AppProperties;
 import com.readingnotes.config.BuildProperties;
 import com.readingnotes.config.RagProperties;
@@ -103,18 +104,18 @@ public class BookServiceImpl implements BookService {
     // 查询
     // =========================================================================
 
-    /** 查询列表；页码与页大小在此夹紧，防止上游传 0/负数造成 SQL 语法错误 */
+    /** 查询列表；页码与页大小在此夹紧，防止上游传 0/负数造成 SQL 语法错误；多租户按登录用户过滤（共享书+本人书） */
     @Override
     public List<Book> list(String status, String keyword, int page, int pageSize) {
         int safePage = Math.max(page, 1);
         int safeSize = Math.min(Math.max(pageSize, 1), 100);
-        return bookRepo.list(status, keyword, safePage, safeSize);
+        return bookRepo.list(status, keyword, AuthContext.getUserId(), safePage, safeSize);
     }
 
     /** 总数，与 {@link #list} 使用同一组过滤条件，保证分页器总数一致 */
     @Override
     public long count(String status, String keyword) {
-        return bookRepo.count(status, keyword);
+        return bookRepo.count(status, keyword, AuthContext.getUserId());
     }
 
     /** 详情；不存在时抛 20005（由仓储层统一抛） */
@@ -270,6 +271,7 @@ public class BookServiceImpl implements BookService {
         String now = Times.now();
         Book book = new Book();
         book.setBookId(bookId);
+        book.setOwnerId(AuthContext.getUserId());   // 多租户：上传者归属；组员共享书保持 NULL
         book.setTitle(finalTitle);
         book.setAuthor(isBlank(author) ? null : author.trim());
         book.setFilePath("uploads/" + bookId + ".pdf");

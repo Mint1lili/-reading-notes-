@@ -49,6 +49,9 @@ public class Note {
     /** 所属书（前端工作台语境，可空） */
     private String bookOwnerId;
 
+    /** 笔记创建者 user_id；NULL=共享笔记（组员可见），非空=仅创建者可见 */
+    private Long ownerId;
+
     /** 是否已进向量库：0 否 / 1 是（阶段 5 回流置 1） */
     private Integer isIndexed;
 

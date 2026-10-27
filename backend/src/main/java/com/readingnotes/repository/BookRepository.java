@@ -56,6 +56,7 @@ public class BookRepository {
     private static final RowMapper<Book> MAPPER = (rs, i) -> {
         Book b = new Book();
         b.setBookId(rs.getString("book_id"));
+        b.setOwnerId(getLong(rs, "owner_id"));
         b.setTitle(rs.getString("title"));
         b.setAuthor(rs.getString("author"));
         b.setFilePath(rs.getString("file_path"));
@@ -79,11 +80,16 @@ public class BookRepository {
         return b;
     };
 
-    /** 书籍列表（默认不含软删；支持 status/keyword 过滤） */
-    public List<Book> list(String status, String keyword, int page, int pageSize) {
+    /**
+     * 书籍列表（默认不含软删；支持 status/keyword 过滤；多租户：可见=全局共享(owner_id IS NULL) 或 本人上传）。
+     *
+     * @param ownerId 当前登录用户 id（AuthContext 解析），必传非空
+     */
+    public List<Book> list(String status, String keyword, Long ownerId, int page, int pageSize) {
         StringBuilder sql = new StringBuilder(
-                "SELECT * FROM books WHERE soft_delete = 0");
+                "SELECT * FROM books WHERE soft_delete = 0 AND (owner_id IS NULL OR owner_id = ?)");
         List<Object> args = new ArrayList<>();
+        args.add(ownerId);
         if (status != null && !status.isBlank()) {
             sql.append(" AND status = ?");
             args.add(status);
@@ -99,9 +105,28 @@ public class BookRepository {
         return jdbc.query(sql.toString(), MAPPER, args.toArray());
     }
 
-    public long count(String status, String keyword) {
-        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM books WHERE soft_delete = 0");
+    /**
+     * 维护任务专用：查看全部书（含私有书），不做租户过滤。
+     * 仅供启动恢复/定时清理等系统级任务使用，禁止用于对外查询。
+     */
+    public List<Book> listAll(String status, int page, int pageSize) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM books WHERE soft_delete = 0");
         List<Object> args = new ArrayList<>();
+        if (status != null && !status.isBlank()) {
+            sql.append(" AND status = ?");
+            args.add(status);
+        }
+        sql.append(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
+        args.add(pageSize);
+        args.add((page - 1) * pageSize);
+        return jdbc.query(sql.toString(), MAPPER, args.toArray());
+    }
+
+    public long count(String status, String keyword, Long ownerId) {
+        StringBuilder sql = new StringBuilder(
+                "SELECT COUNT(*) FROM books WHERE soft_delete = 0 AND (owner_id IS NULL OR owner_id = ?)");
+        List<Object> args = new ArrayList<>();
+        args.add(ownerId);
         if (status != null && !status.isBlank()) {
             sql.append(" AND status = ?");
             args.add(status);
@@ -149,14 +174,14 @@ public class BookRepository {
 
     public void insert(Book b) {
         jdbc.update("""
-                INSERT INTO books (book_id, title, author, file_path, file_size, total_pages,
+                INSERT INTO books (book_id, owner_id, title, author, file_path, file_size, total_pages,
                                    status, build_sub_stage, build_progress,
                                    error_code, error_message, chunk_count, chapter_recognized_rate,
                                    embedding_model, embedding_dim, created_at, updated_at,
                                    last_ready_at, soft_delete, deleted_at, purge_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                b.getBookId(), b.getTitle(), b.getAuthor(), b.getFilePath(), b.getFileSize(), b.getTotalPages(),
+                b.getBookId(), b.getOwnerId(), b.getTitle(), b.getAuthor(), b.getFilePath(), b.getFileSize(), b.getTotalPages(),
                 b.getStatus(), b.getBuildSubStage(), b.getBuildProgress(),
                 b.getErrorCode(), b.getErrorMessage(), b.getChunkCount(), b.getChapterRecognizedRate(),
                 b.getEmbeddingModel(), b.getEmbeddingDim(), b.getCreatedAt(), b.getUpdatedAt(),

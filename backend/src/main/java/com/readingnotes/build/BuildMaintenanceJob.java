@@ -70,8 +70,8 @@ public class BuildMaintenanceJob {
     public void resumeInterruptedBuilds() {
         List<Book> building;
         try {
-            building = new ArrayList<>(bookRepo.list("BUILDING", null, 1, 100));
-            building.addAll(bookRepo.list("REBUILDING", null, 1, 100));
+            building = new ArrayList<>(bookRepo.listAll("BUILDING", 1, 100));
+            building.addAll(bookRepo.listAll("REBUILDING", 1, 100));
         } catch (Exception e) {
             log.warn("skip build self-heal, database not ready: {}", e.getMessage());
             return;

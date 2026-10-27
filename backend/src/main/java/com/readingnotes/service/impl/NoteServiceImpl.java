@@ -2,6 +2,7 @@ package com.readingnotes.service.impl;
 
 import com.readingnotes.common.BusinessException;
 import com.readingnotes.common.ErrorCode;
+import com.readingnotes.security.AuthContext;
 import com.readingnotes.entity.Note;
 import com.readingnotes.repository.NoteLinkRepository;
 import com.readingnotes.repository.NoteRepository;
@@ -70,6 +71,7 @@ public class NoteServiceImpl implements NoteService {
         n.setSourceChunkId(note.getSourceChunkId());
         n.setSourceAiVersionId(note.getSourceAiVersionId());
         n.setBookOwnerId(note.getBookOwnerId());
+        n.setOwnerId(AuthContext.getUserId());   // 多租户：笔记创建者归属；共享笔记保持 NULL
         n.setIsIndexed(0);                    // 手动笔记默认不进向量库
         n.setIndexStatus("NOT_INDEXED");      // 回流状态：未回流
         n.setLastIndexVersion(null);
@@ -94,14 +96,14 @@ public class NoteServiceImpl implements NoteService {
         int safePage = Math.max(page, 1);
         int safeSize = Math.min(Math.max(pageSize, 1), 100);
         return noteRepository.list(sourceBookId, sourceType, keyword, tagName,
-                indexed, softDeleted, safePage, safeSize);
+                indexed, softDeleted, AuthContext.getUserId(), safePage, safeSize);
     }
 
     @Override
     public long count(String sourceBookId, String sourceType, String keyword,
                       String tagName, Boolean indexed, boolean softDeleted) {
         return noteRepository.count(sourceBookId, sourceType, keyword, tagName,
-                indexed, softDeleted);
+                indexed, softDeleted, AuthContext.getUserId());
     }
 
     @Override

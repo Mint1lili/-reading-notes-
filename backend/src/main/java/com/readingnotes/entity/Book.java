@@ -19,6 +19,9 @@ public class Book {
     /** 业务主键，格式 {@code book_<32位hex>} */
     private String bookId;
 
+    /** 上传者 user_id；NULL=全局共享书（组员协作可见），非空=仅上传者私有可见 */
+    private Long ownerId;
+
     /** 书名，默认取 PDF 元数据标题，允许用户编辑 */
     private String title;
 

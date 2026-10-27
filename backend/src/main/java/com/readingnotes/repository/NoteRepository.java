@@ -42,6 +42,7 @@ public class NoteRepository {
         n.setSourceChunkId(rs.getString("source_chunk_id"));
         n.setSourceAiVersionId(rs.getString("source_ai_version_id"));
         n.setBookOwnerId(rs.getString("book_owner_id"));
+        n.setOwnerId(getLong(rs, "owner_id"));
         n.setIsIndexed(rs.getInt("is_indexed"));
         n.setIndexStatus(rs.getString("index_status"));
         n.setLastIndexVersion(rs.getString("last_index_version"));
@@ -60,6 +61,11 @@ public class NoteRepository {
         return rs.wasNull() ? null : v;
     }
 
+    private static Long getLong(ResultSet rs, String col) throws SQLException {
+        long v = rs.getLong(col);
+        return rs.wasNull() ? null : v;
+    }
+
     // ==================== 写入 ====================
 
     /** 新建笔记：主键/时间/版本/软删标记由 Service 生成后整体写入 */
@@ -67,15 +73,15 @@ public class NoteRepository {
         jdbc.update("""
                 INSERT INTO notes (note_id, title, content, source_type,
                                    source_book_id, source_page, source_chunk_id,
-                                   source_ai_version_id, book_owner_id,
+                                   source_ai_version_id, book_owner_id, owner_id,
                                    is_indexed, index_status, last_index_version,
                                    word_count, editor_version, soft_delete,
                                    deleted_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 n.getNoteId(), n.getTitle(), n.getContent(), n.getSourceType(),
                 n.getSourceBookId(), n.getSourcePage(), n.getSourceChunkId(),
-                n.getSourceAiVersionId(), n.getBookOwnerId(),
+                n.getSourceAiVersionId(), n.getBookOwnerId(), n.getOwnerId(),
                 n.getIsIndexed(), n.getIndexStatus(), n.getLastIndexVersion(),
                 n.getWordCount(), n.getEditorVersion(), n.getSoftDelete(),
                 n.getDeletedAt(), n.getCreatedAt(), n.getUpdatedAt());
@@ -112,13 +118,16 @@ public class NoteRepository {
      * @param keyword      标题/正文模糊搜索（可空）
      * @param tagName      按标签名过滤（可空，阶段 2：join note_tag_map）
      * @param indexed      按回流状态过滤（可空：true=已回流 is_indexed=1，false=未回流）
+     * @param ownerId      当前登录用户 id（AuthContext），多租户：可见=共享笔记(owner_id IS NULL) 或 本人创建
      */
     public List<Note> list(String sourceBookId, String sourceType, String keyword,
                            String tagName, Boolean indexed, boolean softDeleted,
-                           int page, int pageSize) {
-        StringBuilder sql = new StringBuilder("SELECT * FROM notes WHERE soft_delete = ?");
+                           Long ownerId, int page, int pageSize) {
+        StringBuilder sql = new StringBuilder(
+                "SELECT * FROM notes WHERE soft_delete = ? AND (owner_id IS NULL OR owner_id = ?)");
         java.util.List<Object> args = new java.util.ArrayList<>();
         args.add(softDeleted ? 1 : 0);
+        args.add(ownerId);
         if (sourceBookId != null && !sourceBookId.isBlank()) {
             sql.append(" AND source_book_id = ?");
             args.add(sourceBookId);
@@ -149,10 +158,12 @@ public class NoteRepository {
 
     /** 计数（与 list 同一套过滤条件，供分页返回 total） */
     public long count(String sourceBookId, String sourceType, String keyword,
-                      String tagName, Boolean indexed, boolean softDeleted) {
-        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM notes WHERE soft_delete = ?");
+                      String tagName, Boolean indexed, boolean softDeleted, Long ownerId) {
+        StringBuilder sql = new StringBuilder(
+                "SELECT COUNT(*) FROM notes WHERE soft_delete = ? AND (owner_id IS NULL OR owner_id = ?)");
         java.util.List<Object> args = new java.util.ArrayList<>();
         args.add(softDeleted ? 1 : 0);
+        args.add(ownerId);
         if (sourceBookId != null && !sourceBookId.isBlank()) {
             sql.append(" AND source_book_id = ?");
             args.add(sourceBookId);
