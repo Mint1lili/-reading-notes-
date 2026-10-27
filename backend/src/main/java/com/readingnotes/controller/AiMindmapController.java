@@ -1,6 +1,7 @@
 package com.readingnotes.controller;
 
 import com.readingnotes.ai.MindmapService;
+import com.readingnotes.common.Result;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -35,9 +36,9 @@ public class AiMindmapController {
         this.mindmapService = mindmapService;
     }
 
-    /** 提交导图任务：body={book_id, source, source_version_id?, chapter_path?} → 202 {task_id,...} */
+    /** 提交导图任务：body={book_id, source, source_version_id?, chapter_path?} → 202 信封 {task_id,...} */
     @PostMapping
-    public ResponseEntity<Map<String, Object>> submit(@RequestBody Map<String, Object> body) {
+    public ResponseEntity<Result<Map<String, Object>>> submit(@RequestBody Map<String, Object> body) {
         String bookId = body.get("book_id") == null ? null : String.valueOf(body.get("book_id"));
         String source = body.get("source") == null ? null : String.valueOf(body.get("source"));
         String sourceVersionId = body.get("source_version_id") == null ? null
@@ -47,22 +48,22 @@ public class AiMindmapController {
         mindmapService.runMindmap(taskId, bookId.trim(), source == null ? "summary" : source.trim(),
                 sourceVersionId, chapterPath);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(mindmapService.taskAccepted(taskId, bookId.trim()));
+                .body(Result.ok(mindmapService.taskAccepted(taskId, bookId.trim())));
     }
 
-    /** 查询导图：GET /mindmap/{book_id}?version=latest|N */
+    /** 查询导图：GET /mindmap/{book_id}?version=latest|N → 信封 */
     @GetMapping("/{book_id}")
-    public Map<String, Object> get(@PathVariable("book_id") String bookId,
+    public Result<Map<String, Object>> get(@PathVariable("book_id") String bookId,
                                    @RequestParam(value = "version", required = false) String version) {
-        return mindmapService.getMindmap(bookId, version);
+        return Result.ok(mindmapService.getMindmap(bookId, version));
     }
 
-    /** 编辑导图：PATCH /mindmap/{version_id} body={content}（不递增版本号） */
+    /** 编辑导图：PATCH /mindmap/{version_id} body={content}（不递增版本号）→ 信封 */
     @PatchMapping("/{version_id}")
-    public Map<String, Object> update(@PathVariable("version_id") String versionId,
+    public Result<Map<String, Object>> update(@PathVariable("version_id") String versionId,
                                       @RequestBody Map<String, Object> body) {
         String content = body.get("content") == null ? null : String.valueOf(body.get("content"));
         mindmapService.updateMindmap(versionId, content);
-        return Map.of("version_id", versionId, "updated", true);
+        return Result.ok(Map.of("version_id", versionId, "updated", true));
     }
 }

@@ -26,6 +26,9 @@
           @keyup.enter="reload"
           @clear="reload"
         />
+        <el-button type="primary" plain :disabled="loading" @click="reload">
+          搜索
+        </el-button>
         <el-select v-model="statusFilter" placeholder="全部状态" clearable style="width: 130px" @change="reload">
           <el-option label="可问答" value="READY" />
           <el-option label="构建中" value="BUILDING" />

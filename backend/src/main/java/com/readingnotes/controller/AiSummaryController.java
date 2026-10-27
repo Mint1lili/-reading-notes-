@@ -1,6 +1,7 @@
 package com.readingnotes.controller;
 
 import com.readingnotes.ai.SummaryService;
+import com.readingnotes.common.Result;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -32,28 +33,29 @@ public class AiSummaryController {
         this.summaryService = summaryService;
     }
 
-    /** 提交摘要任务：body={book_id, temperature, detail_level} → 202 {task_id,...} */
+    /** 提交摘要任务：body={book_id, temperature, detail_level} → 202 信封 {task_id,...} */
     @PostMapping
-    public ResponseEntity<Map<String, Object>> submit(@RequestBody Map<String, Object> body) {
+    public ResponseEntity<Result<Map<String, Object>>> submit(@RequestBody Map<String, Object> body) {
         String bookId = body.get("book_id") == null ? null : String.valueOf(body.get("book_id"));
         Double temperature = body.get("temperature") == null ? null
                 : ((Number) body.get("temperature")).doubleValue();
         String detailLevel = body.get("detail_level") == null ? null : String.valueOf(body.get("detail_level"));
         String taskId = summaryService.submitSummary(bookId, temperature, detailLevel);
         summaryService.runSummary(taskId, bookId.trim(), temperature == null ? 0.3 : temperature, detailLevel);
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(summaryService.taskResult(taskId, bookId.trim()));
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(Result.ok(summaryService.taskResult(taskId, bookId.trim())));
     }
 
-    /** 查询摘要：GET /summary/{book_id}?version=latest|N */
+    /** 查询摘要：GET /summary/{book_id}?version=latest|N → 信封 {book_id, versions, content} */
     @GetMapping("/{book_id}")
-    public Map<String, Object> get(@PathVariable("book_id") String bookId,
+    public Result<Map<String, Object>> get(@PathVariable("book_id") String bookId,
                                    @RequestParam(value = "version", required = false) String version) {
-        return summaryService.getSummary(bookId, version);
+        return Result.ok(summaryService.getSummary(bookId, version));
     }
 
-    /** 重新生成摘要：body={temperature, detail_level} → 202 {task_id,...} */
+    /** 重新生成摘要：body={temperature, detail_level} → 202 信封 {task_id,...} */
     @PostMapping("/{book_id}/regenerate")
-    public ResponseEntity<Map<String, Object>> regenerate(@PathVariable("book_id") String bookId,
+    public ResponseEntity<Result<Map<String, Object>>> regenerate(@PathVariable("book_id") String bookId,
                                                           @RequestBody(required = false) Map<String, Object> body) {
         Double temperature = body == null || body.get("temperature") == null ? null
                 : ((Number) body.get("temperature")).doubleValue();
@@ -61,6 +63,7 @@ public class AiSummaryController {
                 : String.valueOf(body.get("detail_level"));
         String taskId = summaryService.submitSummary(bookId, temperature, detailLevel);
         summaryService.runSummary(taskId, bookId.trim(), temperature == null ? 0.3 : temperature, detailLevel);
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(summaryService.taskResult(taskId, bookId.trim()));
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(Result.ok(summaryService.taskResult(taskId, bookId.trim())));
     }
 }
