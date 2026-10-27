@@ -47,6 +47,7 @@
           <div v-if="m.role === 'ai'" class="ai-avatar">AI</div>
           <div class="msg-content">
             <div v-if="m.role === 'ai' && m.streaming" class="bubble ai">{{ streamingText }}<span class="cursor">▍</span></div>
+            <MindmapView v-else-if="m.role === 'ai' && m.mindmap" :content="m.content" />
             <div v-else-if="m.role === 'ai' && m.markdown" class="bubble ai md"><pre class="mm">{{ m.content }}</pre></div>
             <div v-else-if="m.role === 'ai'" class="bubble ai" v-html="renderText(m.content)"></div>
             <div v-else class="bubble user">{{ m.content }}</div>
@@ -127,6 +128,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, Promotion, Fold, Expand } from '@element-plus/icons-vue'
 import { listBooks, createNote, qaStream, submitSummary, getSummary, submitMindmap, getMindmap, getAiTask } from '../api'
+import MindmapView from '../components/MindmapView.vue'
 
 const route = useRoute()
 
@@ -201,7 +203,7 @@ async function generateTaskAnswer(question, modeNow) {
     const taskId = resp.task_id
     if (!taskId) throw new Error('任务创建失败')
 
-    const m = { role: 'ai', content: '', citations: [], streaming: true, markdown: true, tasking: true }
+    const m = { role: 'ai', content: '', citations: [], streaming: true, markdown: true, mindmap: !isSummary, tasking: true }
     messages.push(m)
     streamingText.value = isSummary ? '正在生成全书摘要…' : '正在生成思维导图…'
     scrollToBottom()

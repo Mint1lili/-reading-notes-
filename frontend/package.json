@@ -12,6 +12,8 @@
     "@element-plus/icons-vue": "^2.3.2",
     "axios": "^1.7.2",
     "element-plus": "^2.7.5",
+    "markmap-lib": "^0.18.12",
+    "markmap-view": "^0.18.12",
     "pinia": "^2.1.7",
     "vue": "^3.4.27",
     "vue-router": "^4.3.2"
