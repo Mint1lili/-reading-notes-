@@ -46,6 +46,16 @@
         >
           <div v-if="m.role === 'ai'" class="ai-avatar">AI</div>
           <div class="msg-content">
+            <!-- 版本切换：摘要/导图历史版本（深层缺陷④） -->
+            <div v-if="m.role === 'ai' && m.versions && m.versions.length" class="ver-bar">
+              <span class="ver-tag">版本</span>
+              <button
+                v-for="v in m.versions" :key="v.version_id"
+                class="ver-btn" :class="{ on: m.curVersion === v.version_number }"
+                @click="switchVersion(m, v.version_number)"
+              >v{{ v.version_number }}</button>
+              <span v-if="m.switching" class="ver-tag">切换中…</span>
+            </div>
             <div v-if="m.role === 'ai' && m.streaming" class="bubble ai">{{ streamingText }}<span class="cursor">▍</span></div>
             <MindmapView v-else-if="m.role === 'ai' && m.mindmap" :content="m.content" />
             <div v-else-if="m.role === 'ai' && m.markdown" class="bubble ai md"><pre class="mm">{{ m.content }}</pre></div>
@@ -245,6 +255,10 @@ async function generateTaskAnswer(question, modeNow) {
     m.streaming = false
     m.tasking = false
     m.content = content || '（未生成内容）'
+    // 版本列表（深层缺陷④）：可切换查看历史版本
+    m.versions = Array.isArray(data.versions) ? data.versions : []
+    const active = m.versions.find(v => v.is_active) || m.versions[0] || {}
+    m.curVersion = active.version_number || 1
     streamingText.value = ''
     scrollToBottom()
   } catch (e) {
@@ -254,6 +268,26 @@ async function generateTaskAnswer(question, modeNow) {
 
 // ===== 发送与流式 =====
 async function ask(q) { draft.value = q; send() }
+
+/** 版本切换（深层缺陷④）：摘要/导图历史版本按版本号重新拉取内容 */
+async function switchVersion(m, versionNumber) {
+  if (m.curVersion === versionNumber || m.switching) return
+  m.switching = true
+  try {
+    const bookId = currentBook.value.book_id
+    const data = m.mindmap ? await getMindmap(bookId, versionNumber) : await getSummary(bookId, versionNumber)
+    if (data && data.content) {
+      m.content = data.content.trim()
+      m.curVersion = versionNumber
+    } else {
+      ElMessage.warning('该版本暂无内容')
+    }
+  } catch (e) {
+    ElMessage.error('切换版本失败：' + (e?.message || ''))
+  } finally {
+    m.switching = false
+  }
+}
 
 function scrollToBottom() {
   nextTick(() => {
@@ -509,6 +543,11 @@ onMounted(loadBooks)
 @keyframes blink { 50% { opacity: 0; } }
 .mm { font-family: 'SF Mono', Consolas, monospace; font-size: 13px; line-height: 1.8; color: #334155; margin: 0; white-space: pre-wrap; word-break: break-word; }
 .cite-caps { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.ver-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.ver-tag { font-size: 12px; color: #8a8f98; }
+.ver-btn { border: 1px solid #d9dee7; background: #fff; color: #4b5563; font-size: 12px;
+  border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+.ver-btn.on { background: #165df5; border-color: #165df5; color: #fff; }
 .cite-tag { cursor: pointer; border-radius: 999px; }
 .msg-actions { margin-top: 6px; display: flex; gap: 4px; opacity: .8; }
 

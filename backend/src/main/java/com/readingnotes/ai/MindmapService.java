@@ -460,12 +460,35 @@ public class MindmapService {
                 .put("source", source)
                 .put("source_version_id", sourceVersionId == null ? "" : sourceVersionId)
                 .put("chapter_path", chapterPath == null ? "" : chapterPath);
+        // 引用溯源：导图来源（summary 版 / chapter 版 / structure 目录版）+ 范围章节路径
+        ObjectNode citations = mapper.createObjectNode()
+                .put("source", source == null ? "unknown" : source)
+                .put("chapter_path", chapterPath == null ? "" : chapterPath);
+        String citationsJson;
+        try {
+            citationsJson = mapper.writeValueAsString(citations);
+        } catch (Exception e) {
+            citationsJson = "{}";
+        }
         jdbc.update("""
                 INSERT INTO ai_versions
                     (version_id, task_id, target_type, target_id, artifact_type, version_number,
-                     is_active, content, citations_json, params_snapshot_json, created_at)
-                VALUES (?, ?, 'book', ?, 'MINDMAP', ?, 1, ?, NULL, ?, ?)
-                """, versionId, taskId, bookId, versionNumber, content, params.toString(), Instant.now().toString());
+                     is_active, content, citations_json, prompt_version_id, params_snapshot_json, created_at)
+                VALUES (?, ?, 'book', ?, 'MINDMAP', ?, 1, ?, ?, ?, ?, ?)
+                """, versionId, taskId, bookId, versionNumber, content, citationsJson,
+                promptVersionRef("mindmap"), params.toString(), Instant.now().toString());
+    }
+
+    /** 当前激活的 Prompt 版本引用（深层缺陷⑭）：prompt_versions 以 (name, version) 定位，引用键 name#version */
+    private String promptVersionRef(String name) {
+        try {
+            return jdbc.queryForObject("""
+                    SELECT CONCAT(name, '#', version) FROM prompt_versions
+                     WHERE is_active = 1 AND name = ? LIMIT 1
+                    """, String.class, name);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // ==================== 提交结果（§7.7 Response 202） ====================

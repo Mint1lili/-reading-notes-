@@ -19,7 +19,13 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 全书摘要（F3.1，API 文档 §7.1/7.2/7.3）
@@ -42,6 +48,8 @@ public class SummaryService {
     private static final String COLLECTION_PREFIX = "book_";
     /** 章节过少时不分层（≤1 章直接 reduce） */
     private static final int MAP_GROUP_LIMIT = 8;
+    /** 章节小结 LLM 并发路数：2 路并行（防豆包限流），24 章摘要从 ~90s 降到 ~45s */
+    private static final int MAP_CONCURRENCY = 2;
 
     private final ChromaClient chroma;
     private final DoubaoClient doubao;
@@ -133,10 +141,39 @@ public class SummaryService {
             Map<String, List<SearchHit>> byChapter = groupByChapter(all);
             List<String> chapterKeys = new ArrayList<>(byChapter.keySet());
 
-            // 3. Map：每章一个子任务（顺序执行，便于节流与进度统计）
+            // 3. Map：章节小结 LLM 调用并发（最多 2 路同时，防豆包限流；原串行 24 章约 90s，
+            //    并发后大幅缩短）。子任务落库与引用收集仍按章节原顺序执行，保证进度统计稳定。
+            ExecutorService mapExec = Executors.newFixedThreadPool(MAP_CONCURRENCY, r -> {
+                Thread t = new Thread(r, "summary-map");
+                t.setDaemon(true);
+                return t;
+            });
+            List<Future<String>> futures = new ArrayList<>();
+            try {
+                for (String chapter : chapterKeys) {
+                    final String ch = chapter;
+                    futures.add(mapExec.submit(() -> {
+                        String sample = sampleChapter(byChapter.get(ch));
+                        String s = doubao.chat(
+                                List.of(new DoubaoClient.ChatMessage("user",
+                                        "你是图书整理助手。请把下面章节的内容压缩成一段不超过 150 字的章节小结，"
+                                                + "保留关键观点与结论，直接输出小结文本，不要加标题。\n\n"
+                                                + "【章节】" + ch + "\n【章节内容】\n" + sample)),
+                                0.3, 400);
+                        return s == null ? "" : s.trim();
+                    }));
+                }
+            } finally {
+                mapExec.shutdown();
+            }
+
             List<String> chapterSummaries = new ArrayList<>();
+            // 引用溯源（深层缺陷⑮）：记录每个来源章节名与页码范围，落 citations_json
+            ObjectNode citations = mapper.createObjectNode();
+            ArrayNode cited = mapper.createArrayNode();
             int done = 0;
-            for (String chapter : chapterKeys) {
+            for (int i = 0; i < chapterKeys.size(); i++) {
+                String chapter = chapterKeys.get(i);
                 String childId = "task_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
                 ObjectNode cp = mapper.createObjectNode().put("chapter", chapter);
                 jdbc.update("""
@@ -145,14 +182,27 @@ public class SummaryService {
                         VALUES (?, 'SUMMARY', 'book', ?, 'RUNNING', ?, ?, ?, ?, ?)
                         """, childId, bookId, cp.toString(), taskId, now, now, traceId);
 
-                String sample = sampleChapter(byChapter.get(chapter));
-                String summary = doubao.chat(
-                        List.of(new DoubaoClient.ChatMessage("user",
-                                "你是图书整理助手。请把下面章节的内容压缩成一段不超过 150 字的章节小结，"
-                                        + "保留关键观点与结论，直接输出小结文本，不要加标题。\n\n"
-                                        + "【章节】" + chapter + "\n【章节内容】\n" + sample)),
-                        0.3, 400);
-                chapterSummaries.add("【" + chapter + "】" + (summary == null ? "" : summary.trim()));
+                Set<Integer> chapterPages = new TreeSet<>();
+                for (SearchHit h : byChapter.get(chapter)) {
+                    int p = h.getMetadata().path("page").asInt(0);
+                    if (p > 0) {
+                        chapterPages.add(p);
+                    }
+                }
+                ObjectNode c = mapper.createObjectNode().put("chapter", chapter);
+                ArrayNode pages = mapper.createArrayNode();
+                chapterPages.forEach(pages::add);
+                c.set("pages", pages);
+                cited.add(c);
+
+                String summary;
+                try {
+                    summary = futures.get(i).get(40, TimeUnit.SECONDS);
+                } catch (Exception e) {
+                    log.warn("summary map task failed chapter={} err={}", chapter, e.getMessage());
+                    summary = "";
+                }
+                chapterSummaries.add("【" + chapter + "】" + summary);
 
                 ObjectNode cr = mapper.createObjectNode().put("chapter_summary", summary);
                 jdbc.update("UPDATE ai_tasks SET status='COMPLETED', result_json=?, finished_at=? WHERE task_id=?",
@@ -193,7 +243,10 @@ public class SummaryService {
             }
 
             // 6. 落库：ai_versions（SUMMARY 版本递增，仅一条激活）+ 主任务 COMPLETED
-            persistVersion(taskId, bookId, finalSummary, detailLevel, temperature);
+            citations.set("chapters", cited);
+            String citationsJson = mapper.writeValueAsString(citations);
+            persistVersion(taskId, bookId, finalSummary, detailLevel, temperature,
+                    citationsJson, promptVersionRef("summary_reduce"));
             jdbc.update("""
                     UPDATE ai_tasks SET status='COMPLETED', result_json=?, finished_at=?, error_message=NULL
                     WHERE task_id=?
@@ -279,8 +332,24 @@ public class SummaryService {
 
     // ==================== 版本与查询 ====================
 
+    /**
+     * 当前激活的 Prompt 版本引用（深层缺陷⑭）：prompt_versions 以 (name, version) 定位，
+     * 引用键为 {@code name#version}（如 summary_reduce#1）；无匹配返回 null（不阻断生成）。
+     */
+    private String promptVersionRef(String name) {
+        try {
+            return jdbc.queryForObject("""
+                    SELECT CONCAT(name, '#', version) FROM prompt_versions
+                     WHERE is_active = 1 AND name = ? LIMIT 1
+                    """, String.class, name);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private void persistVersion(String taskId, String bookId, String content,
-                                String detailLevel, double temperature) {
+                                String detailLevel, double temperature,
+                                String citationsJson, String promptVersion) {
         String now = Instant.now().toString();
         jdbc.update("UPDATE ai_versions SET is_active=0 "
                 + "WHERE target_type='book' AND target_id=? AND artifact_type='SUMMARY'", bookId);
@@ -296,9 +365,10 @@ public class SummaryService {
         jdbc.update("""
                 INSERT INTO ai_versions
                     (version_id, task_id, target_type, target_id, artifact_type, version_number,
-                     is_active, content, citations_json, params_snapshot_json, created_at)
-                VALUES (?, ?, 'book', ?, 'SUMMARY', ?, 1, ?, NULL, ?, ?)
-                """, versionId, taskId, bookId, versionNumber, content, params.toString(), now);
+                     is_active, content, citations_json, prompt_version_id, params_snapshot_json, created_at)
+                VALUES (?, ?, 'book', ?, 'SUMMARY', ?, 1, ?, ?, ?, ?, ?)
+                """, versionId, taskId, bookId, versionNumber, content,
+                citationsJson == null ? "{}" : citationsJson, promptVersion, params.toString(), now);
     }
 
     /**
