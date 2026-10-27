@@ -28,55 +28,11 @@
         </el-form-item>
       </el-form>
     </el-card>
-
-    <!-- RAG 参数 -->
-    <el-card class="set-card" shadow="never">
-      <template #header><div class="set-head"><span>RAG 检索参数</span><el-tag size="small" effect="plain" round>本地生效</el-tag></div></template>
-      <div class="slider-row">
-        <div class="slider-label">召回条数 recall-top-k <span class="slider-val">{{ rag.recallTopK }}</span></div>
-        <el-slider v-model="rag.recallTopK" :min="1" :max="20" :step="1" />
-      </div>
-      <div class="slider-row">
-        <div class="slider-label">相似度阈值 similarity-threshold <span class="slider-val">{{ rag.similarityThreshold }}</span></div>
-        <el-slider v-model="rag.similarityThreshold" :min="0.1" :max="0.9" :step="0.05" />
-      </div>
-      <div class="slider-row">
-        <div class="slider-label">多轮上下文 multi-turn-n <span class="slider-val">{{ rag.multiTurnN }}</span></div>
-        <el-slider v-model="rag.multiTurnN" :min="0" :max="5" :step="1" />
-      </div>
-      <div class="rag-actions">
-        <el-button type="primary" @click="saveRag">保存参数</el-button>
-        <span class="pwd-tip">保存到本地浏览器（后端设置接口实现后接入云端）</span>
-      </div>
-    </el-card>
-
-    <!-- 规划区 -->
-    <el-card class="set-card" shadow="never">
-      <template #header><div class="set-head"><span>规划中</span><el-tag size="small" effect="plain" round>占位</el-tag></div></template>
-      <div class="plan-grid">
-        <div class="plan-item">
-          <div class="plan-name">用量统计</div>
-          <div class="plan-desc">日/周 Token 折线图 + 预算告警（依赖后端用量接口）</div>
-        </div>
-        <div class="plan-item">
-          <div class="plan-name">Prompt 模板</div>
-          <div class="plan-desc">YAML 在线编辑 + 10 版本 diff / 回滚</div>
-        </div>
-        <div class="plan-item">
-          <div class="plan-name">备份恢复</div>
-          <div class="plan-desc">一键 zip + SHA-256 校验 + 自动周备</div>
-        </div>
-        <div class="plan-item">
-          <div class="plan-name">日志查询</div>
-          <div class="plan-desc">按 trace_id 查询全链路调用日志</div>
-        </div>
-      </div>
-    </el-card>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, onBeforeUnmount } from 'vue'
+import { computed, reactive, ref, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { sendCaptcha, setPassword } from '../api/auth'
 import { getStoredUser } from '../utils/token'
@@ -131,24 +87,9 @@ function submitPwd() {
   })
 }
 
-// ===== RAG 参数（本地 localStorage，演示用） =====
-const RAG_KEY = 'reading_notes_rag_params'
-const rag = reactive({ recallTopK: 10, similarityThreshold: 0.5, multiTurnN: 3 })
-
-function loadRag() {
-  try {
-    const raw = localStorage.getItem(RAG_KEY)
-    if (raw) Object.assign(rag, JSON.parse(raw))
-  } catch (e) { /* 忽略 */ }
-}
-
-function saveRag() {
-  localStorage.setItem(RAG_KEY, JSON.stringify({ ...rag }))
-  ElMessage.success('RAG 参数已保存（本地生效）')
-}
-
-onMounted(loadRag)
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
+
+// ===== 设置密码 =====
 </script>
 
 <style scoped>
@@ -164,14 +105,4 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 .code-row .el-input { flex: 1; }
 .code-row .el-button { width: 108px; }
 .pwd-tip { font-size: 12px; color: #94a3b8; margin-left: 12px; }
-
-.slider-row { margin-bottom: 14px; }
-.slider-label { display: flex; justify-content: space-between; font-size: 13px; color: #475569; margin-bottom: 2px; }
-.slider-val { font-weight: 700; color: #14532d; }
-.rag-actions { display: flex; align-items: center; }
-
-.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-.plan-item { background: #f6f8f7; border: 1px solid #eef2f0; border-radius: 10px; padding: 14px; }
-.plan-name { font-weight: 600; font-size: 14px; color: #1f2937; }
-.plan-desc { font-size: 12px; color: #94a3b8; margin-top: 6px; line-height: 1.6; }
 </style>
