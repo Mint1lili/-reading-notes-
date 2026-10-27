@@ -161,8 +161,10 @@ function coverColor(title) {
 const statusText = (s) => ({ READY: '可阅读', BUILDING: '构建中', FAILED: '构建失败' }[s] || s || '未知')
 
 const quickQuestions = computed(() => ({
-  summary: ['这本书讲了什么？', '核心观点有哪些？', '适合谁读？'],
-  qa: ['第三章的核心思想是什么？', '作者如何论证主要观点？', '有哪些经典案例？'],
+  // 全书摘要：本质是"生成摘要"动作，不承载开放问题
+  summary: ['生成全书摘要'],
+  // 书本问答：开放性问题走 SSE 检索问答
+  qa: ['这本书讲了什么？', '核心观点有哪些？', '适合谁读？', '第三章的核心思想是什么？', '作者如何论证主要观点？', '有哪些经典案例？'],
   mindmap: ['生成这本书的思维导图', '按章节梳理知识结构']
 }[mode.value] || []))
 
@@ -263,6 +265,12 @@ async function send() {
 async function generateAnswer(question) {
   const modeNow = mode.value
   if (modeNow === 'summary' || modeNow === 'mindmap') {
+    // 全书摘要本质是"生成摘要"动作：输入开放问题（带问号）时引导到书本问答，
+    // 避免"问适合谁读却返回全文摘要"这种答非所问
+    if (modeNow === 'summary' && /？|\?/.test(question) && !/生成|摘要/.test(question)) {
+      ElMessage.info('「全书摘要」用于生成整本书的摘要；想问开放性问题请切到「书本问答」标签')
+      return
+    }
     await generateTaskAnswer(question, modeNow)
     return
   }
