@@ -266,7 +266,9 @@ async function send() {
 async function generateAnswer(question) {
   const q = question || ''
   const isAction = /生成|摘要|总结|导图|思维导图|梳理|结构|大纲/.test(q)
-  const isQuestion = /[？?]/.test(q) && !isAction
+  // 开放问题识别：带问号，或含疑问词（谁/什么/哪些/怎么/如何/为什么/多少/哪里/几/是不是/能不能/有没有）
+  // —— 允许不带问号，如"适合谁读"、"这本书讲了什么"
+  const isQuestion = !isAction && (/[？?]/.test(q) || /谁|什么|哪些|怎么|如何|为什么|多少|哪里|几|是不是|能不能|有没有/.test(q))
 
   if (isQuestion) {
     mode.value = 'qa'
