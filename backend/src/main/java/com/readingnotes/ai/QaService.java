@@ -313,7 +313,8 @@ public class QaService {
                 chunks.add(mapper.createObjectNode()
                         .put("chunk_id", h.getId())
                         .put("page", pageOf(h))
-                        .put("score", Math.max(0.0, 1.0 - h.getDistance())));
+                        .put("score", Math.max(0.0, 1.0 - h.getDistance()))
+                        .put("is_truncated", h.getMetadata().path("is_truncated").asInt(0)));
             }
             emitter.send(SseEmitter.event().name("meta")
                     .data(mapper.createObjectNode()

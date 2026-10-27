@@ -67,8 +67,19 @@ http.interceptors.response.use(
     if (err.response?.status === 404) {
       return Promise.reject(err)
     }
-    // 传输层错误（网络断开、5xx 无信封、超时）
-    const msg = err.response?.data?.message || '网络异常，请检查后端与 Chroma 服务'
+    // 传输层错误（网络断开、5xx 无信封、超时）——按真实原因分类给用户可操作的文案
+    let msg
+    if (err.code === 'ECONNABORTED') {
+      msg = '请求超时，请稍后重试'
+    } else if (!err.response) {
+      msg = '网络连接失败，请确认后端服务已启动（IDEA 运行 backend，Chroma 在 8000 端口）'
+    } else if (err.response.status === 502 || err.response.status === 504) {
+      msg = '后端或 Chroma 向量库无响应，请检查两个服务是否在运行'
+    } else if (err.response.status >= 500) {
+      msg = '后端服务异常（' + err.response.status + '），请查看后端日志后重试'
+    } else {
+      msg = err.response?.data?.message || '请求失败（' + (err.response.status || '') + '）'
+    }
     ElMessage.error(msg)
     return Promise.reject(err)
   }

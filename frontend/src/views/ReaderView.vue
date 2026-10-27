@@ -307,10 +307,9 @@ async function generateQAAnswer(question) {
     {
       book_id: bookId,
       question,
-      session_id: sessionIdMap[bookId] || undefined,
-      // 当前向量化走豆包 multimodal 模型（文本检索区分度弱，top1≈0.3），
-      // 覆盖后端默认拒答阈值 0.5，避免检索命中却被拒答
-      similarity_threshold: 0.25
+      session_id: sessionIdMap[bookId] || undefined
+      // 检索阈值统一由后端全局配置（rag.similarity-threshold，settings 页可调），
+      // 前端不再传参覆盖——避免前后端魔法数字不一致
     },
     {
       onMeta: (meta) => {
@@ -322,9 +321,10 @@ async function generateQAAnswer(question) {
           m.citations = meta.retrieved_chunks.map((c) => ({
             book: currentBook.value?.title || '本书',
             page: c.page || 0,
-            text: `检索命中 · 相似度 ${Math.round((c.score || 0) * 100)}%`,
+            text: `检索命中 · 相似度 ${Math.round((c.score || 0) * 100)}%` + (c.is_truncated ? ' · 内容过长已截断' : ''),
             similarity: c.score,
-            chunk_id: c.chunk_id
+            chunk_id: c.chunk_id,
+            truncated: !!c.is_truncated
           }))
         }
       },

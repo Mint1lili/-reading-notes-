@@ -12,5 +12,20 @@ export default defineConfig({
         changeOrigin: true
       }
     }
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // 拆出体积大户，避免主包 1MB+：element-plus / markmap / 其它第三方库
+          if (id.includes('node_modules')) {
+            if (id.includes('element-plus')) return 'element-plus'
+            if (id.includes('markmap') || id.includes('d3')) return 'markmap'
+            return 'vendor'
+          }
+        }
+      }
+    },
+    chunkSizeWarningLimit: 600
   }
 })

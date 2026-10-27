@@ -442,6 +442,10 @@ public class BuildTaskService {
                     m.put("chapter_title", c.getChapterTitle() == null ? "" : c.getChapterTitle());
                     m.put("chunk_type", "book");
                     m.put("position", c.getPosition());
+                    // 单条文本超过 embedding 输入上限（max-input-chars=6000）会被静默截断，
+                    // 记录标记供检索/溯源时提示"内容不完整"
+                    m.put("is_truncated",
+                            c.getContent() != null && c.getContent().length() > doubaoProps.getMaxInputChars() ? 1 : 0);
                     metas.add(m);
                 }
                 chroma.upsert(collection, ids, vectors, docs, metas);
