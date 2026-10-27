@@ -29,6 +29,7 @@
         <div class="toc-head">
           <span>目录</span>
           <span class="toc-count">{{ flatChapters.length }} 章</span>
+          <el-button link size="small" type="primary" @click="showAll">全部</el-button>
         </div>
         <el-tree
           v-loading="treeLoading"
@@ -83,6 +84,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { getBook, listChapters, listChunks } from '../api'
 
 const route = useRoute()
@@ -150,7 +152,21 @@ async function loadChunks(path) {
 function onChapterClick(node) {
   currentChapter.value = node
   page.value = 1
-  loadChunks(node.chapter_path)
+  loadChunks(node.chapter_path).then(() => {
+    // 该章无独立切片（如"前言"在构建时 chapter_path 缺失、chunk 归到未分章组）
+    // → 回退显示全书，保证点击任何章节都能看到内容
+    if (!chunks.value.length) {
+      loadChunks(null)
+      ElMessage.info(`「${node.title}」无独立切片，已显示全书内容`)
+    }
+  })
+}
+
+/** 阅读全部：全书连续分页（chapter 不传=全书） */
+function showAll() {
+  currentChapter.value = null
+  page.value = 1
+  loadChunks(null)
 }
 
 function gotoPage(p) {
