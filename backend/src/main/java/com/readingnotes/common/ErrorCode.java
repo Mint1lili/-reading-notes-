@@ -68,6 +68,7 @@ public enum ErrorCode {
     DOUBAO_MODEL_NOT_OPEN(70009,
             "该模型未在当前账号开通，请到方舟控制台「开通管理」开通后再试"
                     + "（https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement）", 503),
+    AI_RATE_LIMITED(70010, "AI 接口请求过于频繁，请稍后再试", 429),
 
     // ===== 认证 8xxxx =====
     EMAIL_TAKEN(80001, "该邮箱已注册", 409),

@@ -143,8 +143,19 @@ const streamingText = ref('')
 const bodyRef = ref()
 const citeOpen = ref(true)
 const activeCitations = ref([])
-/** 多轮会话：book_id → session_id（书本内问答透传，保持上下文） */
-const sessionIdMap = reactive({})
+/**
+ * 多轮会话：book_id → session_id（书本内问答透传，保持上下文）。
+ * 持久化到 localStorage——刷新页面后多轮上下文不丢（深层缺陷⑦）。
+ */
+const SESSION_KEY = 'reading_notes_ai_sessions'
+const sessionIdMap = reactive(JSON.parse(localStorage.getItem(SESSION_KEY) || '{}'))
+
+function rememberSession(bookId, sid) {
+  sessionIdMap[bookId] = sid
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(sessionIdMap))
+  } catch (e) { /* 存储满/隐私模式：仅本次会话有效 */ }
+}
 
 const coverColors = ['#14532d', '#2f855a', '#5b8c6a', '#86b59b', '#3e6b4f', '#1f7a54']
 
@@ -315,7 +326,7 @@ async function generateQAAnswer(question) {
       onMeta: (meta) => {
         if (meta?.session_id) {
           m.sessionId = meta.session_id
-          sessionIdMap[bookId] = meta.session_id
+          rememberSession(bookId, meta.session_id)
         }
         if (Array.isArray(meta?.retrieved_chunks)) {
           m.citations = meta.retrieved_chunks.map((c) => ({
