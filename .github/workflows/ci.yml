@@ -82,7 +82,7 @@ jobs:
             sleep 2
           done
           echo "MySQL not ready"; exit 1
-      - name: Apply migrations (0001 -> 0004)
+      - name: Apply migrations (0001 -> 0007)
         run: |
           for f in backend/src/main/resources/sql/mysql/*.sql; do
             echo "==> $f"
@@ -100,5 +100,5 @@ jobs:
           [ "$prompt_cnt" -eq 8 ]  || { echo "FAIL prompt_versions=$prompt_cnt != 8"; exit 1; }
           [ "$tag_cnt" -eq 6 ]     || { echo "FAIL tags=$tag_cnt != 6"; exit 1; }
           [ "$book_cnt" -eq 5 ]    || { echo "FAIL books=$book_cnt != 5"; exit 1; }
-          [ "$mig_cnt" -eq 4 ]     || { echo "FAIL schema_migrations=$mig_cnt != 4"; exit 1; }
-          echo "DB_CHECKS_OK: 50 eval / 8 prompts / 6 tags / 5 books / 4 migrations"
+          [ "$mig_cnt" -eq 7 ]     || { echo "FAIL schema_migrations=$mig_cnt != 7"; exit 1; }
+          echo "DB_CHECKS_OK: 50 eval / 8 prompts / 6 tags / 5 books / 7 migrations"

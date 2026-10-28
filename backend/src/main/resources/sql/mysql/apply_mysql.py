@@ -108,7 +108,7 @@ def check():
     try:
         cur.execute("USE reading_notes")
         for table, expect in (("eval_datasets", 50), ("prompt_versions", 8),
-                              ("tags", 6), ("books", 5), ("schema_migrations", 4)):
+                              ("tags", 6), ("books", 5), ("schema_migrations", 7)):
             cur.execute(f"SELECT COUNT(*) FROM {table}")
             cnt = cur.fetchone()[0]
             status = "OK " if cnt == expect else "FAIL"

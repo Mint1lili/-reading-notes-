@@ -8,3 +8,7 @@
 -- 适用：MySQL 8（sqlite 版 0001_init.sql 同问题，如使用 sqlite 需一并处理）。
 -- ============================================================================
 ALTER TABLE ai_versions DROP INDEX idx_aiver_target_active;
+
+-- ---------- 记录本次迁移 ----------
+INSERT IGNORE INTO schema_migrations(version, name, applied_at) VALUES
+    (6, 'drop_ai_versions_target_active_unique', '2026-10-24T00:00:00.000Z');

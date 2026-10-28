@@ -8,6 +8,10 @@ ALTER TABLE books
 ALTER TABLE notes
     ADD COLUMN owner_id BIGINT NULL COMMENT '笔记创建者user_id；NULL=共享' AFTER book_owner_id;
 
+-- ---------- 记录本次迁移 ----------
+INSERT IGNORE INTO schema_migrations(version, name, applied_at) VALUES
+    (7, 'tenant_owner_id', '2026-10-25T00:00:00.000Z');
+
 -- 说明：
 -- 1. 历史数据 owner_id 保持 NULL → 全部可见（共享），不破坏现有行为；
 -- 2. 新上传的书 / 新创建的笔记自动写入当前登录用户 id；

@@ -392,15 +392,15 @@ class NoteServiceImplTest {
     @Test
     @DisplayName("列表：页码/页大小越界时兜底到 1~100")
     void list_safePaging() {
-        // 签名：bookId, sourceType, keyword, tagName, indexed, softDeleted, page, pageSize
-        when(noteRepository.list(any(), any(), any(), any(), any(), anyBoolean(), anyInt(), anyInt()))
+        // 签名：bookId, sourceType, keyword, tagName, indexed, softDeleted, ownerId, page, pageSize
+        when(noteRepository.list(any(), any(), any(), any(), any(), anyBoolean(), any(), anyInt(), anyInt()))
                 .thenReturn(java.util.List.of());
 
         noteService.list(null, null, null, null, null, false, 0, 999);
         noteService.list(null, null, null, null, null, false, -5, 0);
 
-        verify(noteRepository).list(eq(null), eq(null), eq(null), eq(null), eq(null), eq(false), eq(1), eq(100));
-        verify(noteRepository).list(eq(null), eq(null), eq(null), eq(null), eq(null), eq(false), eq(1), eq(1));
+        verify(noteRepository).list(eq(null), eq(null), eq(null), eq(null), eq(null), eq(false), any(), eq(1), eq(100));
+        verify(noteRepository).list(eq(null), eq(null), eq(null), eq(null), eq(null), eq(false), any(), eq(1), eq(1));
     }
 
     @Test

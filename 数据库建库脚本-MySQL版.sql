@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS books (
     book_id                  VARCHAR(64) PRIMARY KEY,
+    owner_id                 BIGINT NULL COMMENT '上传者user_id；NULL=全局共享',
     title                    VARCHAR(512) NOT NULL,
     author                   VARCHAR(128),
     file_path                VARCHAR(1024) NOT NULL,
@@ -155,6 +156,7 @@ CREATE TABLE IF NOT EXISTS notes (
     source_chunk_id      VARCHAR(64),
     source_ai_version_id VARCHAR(64),
     book_owner_id        VARCHAR(64),
+    owner_id             BIGINT NULL COMMENT '笔记创建者user_id；NULL=共享',
     is_indexed           INT NOT NULL DEFAULT 0,
     index_status         VARCHAR(24) NOT NULL DEFAULT 'NOT_INDEXED',
     last_index_version   VARCHAR(64),
@@ -313,8 +315,8 @@ CREATE TABLE IF NOT EXISTS ai_versions (
     UNIQUE (target_type, target_id, artifact_type, version_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE UNIQUE INDEX idx_aiver_target_active
-    ON ai_versions(target_type, target_id, artifact_type);
+-- 注意：不再创建 idx_aiver_target_active 无条件唯一索引（0006 已移除），
+-- 否则同一本书只能存在一行 AI 产物、多版本生成必报 Duplicate entry。
 CREATE INDEX idx_aiver_task
     ON ai_versions(task_id);
 
@@ -945,4 +947,39 @@ INSERT IGNORE INTO schema_migrations(version, name, applied_at) VALUES
     (4, 'seed_tags', '2026-10-15T00:00:00.000Z');
 
 SELECT * FROM tags ORDER BY tag_id;
+
+-- ===================== 0005_settings.sql =====================
+-- ============================================================================
+-- Migration 0005: System Settings
+-- 用于持久化模型参数 / RAG 参数等设置项（F5 设置页面热更新后重启不丢失）
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS settings (
+    setting_key   VARCHAR(128) PRIMARY KEY,
+    setting_value TEXT         NOT NULL,
+    description   VARCHAR(256),
+    updated_at    VARCHAR(64)  NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- setting_key 已为主键（自带索引），无需额外索引
+
+INSERT IGNORE INTO schema_migrations(version, name, applied_at) VALUES
+    (5, 'settings', '2026-10-23T00:00:00.000Z');
+
+-- ===================== 0006_drop_ai_versions_target_active_unique.sql =====================
+-- 修复 ai_versions 多版本唯一约束：删除 idx_aiver_target_active 无条件唯一索引，
+-- 版本唯一性已由表内 UNIQUE (target_type, target_id, artifact_type, version_number) 保证。
+-- 本一键脚本新建库时建表段已不创建该索引，无需再执行 DROP；
+-- 已按旧脚本建库的环境请单独执行 backend/src/main/resources/sql/mysql/0006_drop_ai_versions_target_active_unique.sql
+
+INSERT IGNORE INTO schema_migrations(version, name, applied_at) VALUES
+    (6, 'drop_ai_versions_target_active_unique', '2026-10-24T00:00:00.000Z');
+
+-- ===================== 0007_tenant_owner_id.sql =====================
+-- 多租户隔离（深层缺陷①）：books/notes 增加 owner_id
+-- NULL = 全局共享（保留历史数据与组员协作），非空 = 上传者/创建者私有
+-- 本一键脚本新建库时建表段已含 owner_id 列，无需再执行 ALTER；
+-- 已按旧脚本建库的环境请单独执行 backend/src/main/resources/sql/mysql/0007_tenant_owner_id.sql
+
+INSERT IGNORE INTO schema_migrations(version, name, applied_at) VALUES
+    (7, 'tenant_owner_id', '2026-10-25T00:00:00.000Z');
 

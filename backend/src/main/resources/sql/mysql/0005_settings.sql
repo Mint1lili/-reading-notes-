@@ -9,8 +9,7 @@ CREATE TABLE IF NOT EXISTS settings (
     description   VARCHAR(256),
     updated_at    VARCHAR(64)  NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(setting_key);
+-- setting_key 已为主键（自带索引），无需额外索引
 
 -- ---------- 记录本次迁移 ----------
 INSERT IGNORE INTO schema_migrations(version, name, applied_at) VALUES
